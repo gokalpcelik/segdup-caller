@@ -76,6 +76,8 @@ class Bam:
         self._depth_coords_cache = {}  # Cache for sorted coordinate lists
         self.overall_depth_std = 0.0
         self.cnv_bin_size = 1000  # main.cnv_bin_size
+        self.cnv_caller = "depth"  # --cnv_caller: "depth" (built-in) or "cnvkit"
+        self.cnvkit = "cnvkit.py"  # tool path, set when --cnv_caller cnvkit
         self.gatk_java_options = tools.DEFAULT_JAVA_OPTIONS  # main.gatk_java_options
         self.gatk_min_mapq = tools.DEFAULT_HC_MIN_MAPQ  # main.gatk_min_mapq
         self.prefix = None

@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import pandas as pd
 import pytest
@@ -7,6 +8,11 @@ import vcflib
 from genecaller.calling import cnv
 
 from conftest import need_tools
+
+
+need_cnvkit = pytest.mark.skipif(not shutil.which("cnvkit.py"), reason="cnvkit.py is required")
+
+CALLERS = ["depth", pytest.param("cnvkit", marks=need_cnvkit)]
 
 
 @pytest.fixture(autouse=True)
@@ -22,8 +28,11 @@ def test_diploid_depth_close_to_truth(make_bam):
 
 
 @need_tools
-def test_depth_caller_finds_het_deletion_and_low_mapq(make_bam, tmp_path):
+@pytest.mark.parametrize("caller", CALLERS)
+def test_depth_caller_finds_het_deletion_and_low_mapq(make_bam, tmp_path, caller):
     bam = make_bam()
+    bam.cnv_caller = caller
+    bam.cnvkit = shutil.which("cnvkit.py") or "cnvkit.py"
     out = str(tmp_path / "x.vcf.gz")
     norm = str(tmp_path / "x.norm.tsv")
     cnv.call_cnvscope(bam, out, {"region": "chr1,chr2", "output_norm": norm})
@@ -48,11 +57,23 @@ def test_depth_caller_finds_het_deletion_and_low_mapq(make_bam, tmp_path):
 
 
 @need_tools
-def test_call_depth_populates_segments_and_depths(make_bam, tmp_path):
+@pytest.mark.parametrize("caller", CALLERS)
+def test_call_depth_populates_segments_and_depths(make_bam, tmp_path, caller):
     bam = make_bam()
+    bam.cnv_caller = caller
+    bam.cnvkit = shutil.which("cnvkit.py") or "cnvkit.py"
     bam.prefix = str(tmp_path / "p")
     cnv.call_depth(bam, str(tmp_path / "c.vcf.gz"), {"region": "chr1:70000-110000"})
     assert bam.depths["chr1"] and bam.segments["chr1"]
     depths = bam.get_depth("chr1:85000-95000")
     assert depths and all(0.3 < d.mean < 0.7 for d in depths)
     assert bam.overall_depth_std >= 0
+
+
+@need_tools
+def test_template_key_differs_by_caller(make_bam):
+    bam = make_bam()
+    param = {"region": "chr1"}
+    depth_key = cnv.cnvscope_template(bam, param)
+    bam.cnv_caller = "cnvkit"
+    assert cnv.cnvscope_template(bam, param) != depth_key

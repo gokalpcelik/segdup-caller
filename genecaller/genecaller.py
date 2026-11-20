@@ -270,13 +270,19 @@ class GeneCaller:
         self.params = {}
         self.ref = ""
 
-    def setup_paths(self) -> dict[str, str]:
+    def setup_paths(self, cnv_caller: str = "depth") -> dict[str, str]:
         cmds = {}
         for cmd, version in CALLING_MIN_VERSIONS.items():
             cmd_path = get_cmd(cmd, version)
             if not cmd_path:
                 sys.exit(1)
             cmds[cmd.split()[0]] = cmd_path
+        if cnv_caller == "cnvkit":
+            cmd_path = get_cmd("cnvkit.py")
+            if not cmd_path:
+                logger.error("--cnv_caller cnvkit requires cnvkit.py on the PATH (conda install -c bioconda cnvkit)")
+                sys.exit(1)
+            cmds["cnvkit"] = cmd_path
         return cmds
 
     def reset_read_data(self, params: Dict[str, Any]) -> None:
@@ -449,11 +455,18 @@ class GeneCaller:
             help="Also emit a single merged VCF concatenating every per-gene "
             "result VCF, with an INFO/GENE tag identifying the source gene.",
         )
+        parser.add_argument(
+            "--cnv_caller",
+            choices=["depth", "cnvkit"],
+            default="depth",
+            help="Copy-number backend: the built-in depth caller (default) or CNVkit "
+            "(GC/edge/repeat bias correction + Haar segmentation; needs cnvkit.py on PATH)",
+        )
         parser.add_argument("--input_vcf", help=argparse.SUPPRESS)
         args = parser.parse_args()
 
         # Setup tools after argument parsing (so --version and --help work without dependencies)
-        self.tools = self.setup_paths()
+        self.tools = self.setup_paths(args.cnv_caller)
         for input in (args.short, args.long):
             if not input:
                 continue
@@ -579,6 +592,7 @@ class GeneCaller:
                 "workers": args.workers,
                 "skip_variant_call": args.skip_variant_call,
                 "merge_vcf": args.merge_vcf,
+                "cnv_caller": args.cnv_caller,
             }
         )
         if args.input_vcf:

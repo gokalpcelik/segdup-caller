@@ -8,6 +8,7 @@ then reads those outputs by path (`staged_run`).
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -32,11 +33,15 @@ def _inputs(bam: Any) -> List[str]:
     return list(getattr(bam, "cnv_inputs", None) or [bam.bam])
 
 
+def _caller(bam: Any) -> str:
+    return getattr(bam, "cnv_caller", "depth") or "depth"
+
+
 def cnvscope_template(bam: Any, param: Dict[str, Any]) -> str:
     """Key identifying a depth run: two runs with the same key produce the same output."""
     return "|".join(
         [
-            "native_depth",
+            "native_depth" if _caller(bam) == "depth" else f"{_caller(bam)}_depth",
             ",".join(_inputs(bam)),
             str(param.get("region", "")),
             str(getattr(bam, "cnv_bin_size", DEFAULT_BIN_SIZE)),
@@ -206,13 +211,89 @@ def _write_vcf(bam: Any, rows: pd.DataFrame, cn: np.ndarray, out_vcf: str) -> No
         os.remove(raw)
 
 
+CNVKIT_NULL_LOG2 = -20.0  # CNVkit's log2 for a bin with no coverage
+CNVKIT_SEGMENT_METHOD = "haar"  # pure Python; cbs needs R, and hmm failed on integer weights in 0.9.14
+_CNN_COLS = ["chromosome", "start", "end", "gene", "depth", "log2"]
+
+
+def _cnvkit(bam: Any, args: str) -> str:
+    return _run(bam, f"{tools._q(getattr(bam, 'cnvkit', 'cnvkit.py'))} {args}")
+
+
+def _cnvkit_correct(bam: Any, rows: pd.DataFrame, dp_raw: np.ndarray, output: str) -> np.ndarray:
+    """Replace ``rows["DP"]`` by CNVkit's bias-corrected, segmented depth; return per-bin copy number.
+
+    The grid's confident depth (``dp_raw``, diploid = 1) goes through ``cnvkit fix`` against a flat
+    reference (GC, edge and repeat-mask bias correction) and ``cnvkit segment``. CNVkit median-centres
+    each run, which would hide a deletion or gain covering most of a short run, so the corrected
+    depth is re-anchored to the sample's global diploid depth with the median per-bin ratio.
+    Bins CNVkit drops (no coverage) keep their raw depth.
+    """
+    prefix = output[: output.index(".vcf")] if ".vcf" in output else output
+    wd = tempfile.mkdtemp(prefix="cnvkit.", dir=bam.tmpdir)
+    try:
+        contig = rows["contig"].values
+        start, end = rows["start"].values, rows["end"].values
+        depth = dp_raw  # relative depth; CNVkit only needs the ratios
+        pos = depth[depth > 0]
+        ref_level = float(np.median(pos)) if len(pos) else 1.0
+        log2 = np.where(depth > 0, np.log2(np.where(depth > 0, depth, 1.0) / ref_level), CNVKIT_NULL_LOG2)
+        cnn = pd.DataFrame(
+            {"chromosome": contig, "start": start, "end": end, "gene": "-", "depth": depth, "log2": log2}
+        )
+        t_cnn, a_cnn, r_cnn, cnr, cns, grid = (
+            os.path.join(wd, f) for f in ("t.cnn", "a.cnn", "flat.cnn", "s.cnr", "s.cns", "grid.bed")
+        )
+        cnn.to_csv(t_cnn, sep="\t", index=False)
+        with open(a_cnn, "w") as fh:
+            fh.write("\t".join(_CNN_COLS) + "\n")
+        cnn[["chromosome", "start", "end", "gene"]].to_csv(grid, sep="\t", index=False, header=False)
+        _cnvkit(bam, f"reference -f {tools._q(bam.ref)} -t {tools._q(grid)} -o {tools._q(r_cnn)}")
+        _cnvkit(bam, f"fix {tools._q(t_cnn)} {tools._q(a_cnn)} {tools._q(r_cnn)} -o {tools._q(cnr)}")
+        _cnvkit(bam, f"segment {tools._q(cnr)} -m {CNVKIT_SEGMENT_METHOD} -o {tools._q(cns)}")
+        fixed = pd.read_csv(cnr, sep="\t")
+        segs = pd.read_csv(cns, sep="\t")
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
+
+    # join the corrected bins back onto the grid (dropped bins stay NaN)
+    key = pd.MultiIndex.from_arrays([contig, start])
+    corr = pd.Series(
+        np.power(2.0, fixed["log2"].values),
+        index=pd.MultiIndex.from_arrays([fixed["chromosome"].astype(str).values, fixed["start"].values]),
+    )
+    corr = corr[~corr.index.duplicated()].reindex(key).values
+    seg_log2 = np.full(len(rows), np.nan)
+    order = {c: i for i, c in enumerate(dict.fromkeys(contig))}
+    for c, g in segs.groupby(segs["chromosome"].astype(str)):
+        if c not in order:
+            continue
+        idx = np.flatnonzero(contig == c)
+        s_arr, e_arr = start[idx], end[idx]
+        for s, e, v in zip(g["start"].values, g["end"].values, g["log2"].values):
+            lo, hi = np.searchsorted(s_arr, s, "left"), np.searchsorted(e_arr, e, "right")
+            seg_log2[idx[lo:hi]] = v
+    ok = np.isfinite(corr) & (corr > 0) & (dp_raw > 0)
+    factor = float(np.median(dp_raw[ok] / corr[ok])) if ok.sum() else 1.0
+    new_dp = np.where(np.isfinite(corr), corr * factor, dp_raw)
+    seg_dp = np.where(np.isfinite(seg_log2), np.power(2.0, seg_log2) * factor, new_dp)
+    seg_dp = np.where(np.isfinite(corr), seg_dp, dp_raw)
+    ratio = np.divide(new_dp, dp_raw, out=np.ones_like(new_dp), where=dp_raw > 0)
+    rows["DP"] = new_dp
+    rows["DP0"] = rows["DP0"].values * ratio  # keep the all-read depth on the corrected scale
+    return np.rint(2 * seg_dp).astype(int)
+
+
 def call_cnvscope(bam: Any, output: str, param: Dict[str, Any]) -> None:
     """Depth-based copy-number segmentation over ``param["region"]`` (replaces Sentieon CNVscope).
+
+    With ``bam.cnv_caller == "cnvkit"`` the depth is GC/edge/repeat-corrected and segmented by
+    CNVkit (`_cnvkit_correct`) instead of the plain rounding below; the outputs are identical in form.
 
     Writes the per-bin table ``param["output_norm"]`` (contig,start,end,MQ,DP,DP0) and a segment
     VCF ``output`` (INFO CNT; FORMAT MQS, DPS, DP0S) that ``call_depth`` reads. Depth is normalized
     so a diploid unique region is 1.0. MQ is a proxy: 60 x the fraction of depth carried by reads
-    with MAPQ >= CONFIDENT_MAPQ. No GC or mappability correction is applied.
+    with MAPQ >= CONFIDENT_MAPQ. The default caller applies no GC or mappability correction.
     """
     if bam.use_existing and os.path.exists(output) and os.path.getsize(output):
         return
@@ -241,8 +322,11 @@ def call_cnvscope(bam: Any, output: str, param: Dict[str, Any]) -> None:
             "DP0": d_all / scale,
         }
     )
+    if _caller(bam) == "cnvkit":
+        cn = _cnvkit_correct(bam, rows, d_conf / scale, output)
+    else:
+        cn = np.rint(2 * rows["DP"].values).astype(int)
     rows.to_csv(norm_path, sep="\t", index=False)
-    cn = np.rint(2 * rows["DP"].values).astype(int)
     _write_vcf(bam, rows, cn, output)
 
 

@@ -88,7 +88,7 @@ aligned, coordinate-sorted, duplicate-marked and indexed.
 
 > **Fork note.** This fork no longer needs Sentieon software, a license or model bundles.
 > Small variants are called with GATK HaplotypeCaller (no ML rescoring) and copy-number
-> depth with a built-in depth caller instead of CNVscope, so results differ from upstream
+> depth with a built-in depth caller (optionally CNVkit, `--cnv_caller cnvkit`) instead of CNVscope, so results differ from upstream
 > and the validation figures in `doc/` do not apply. Long-read calling uses HaplotypeCaller,
 > which is weak on long reads. `--sr_model`/`--lr_model` are accepted but ignored.
 

@@ -147,14 +147,14 @@ Clinical-significance text in the YAML is informational only.
 ## 7. How it works, briefly
 
 1. Per gene, reads from the gene and its paralog regions are extracted (samtools) and re-mapped onto the paralog (minimap2) to "lift over" ambiguous reads.
-2. Copy numbers come from a **depth-based caller** (`calling/cnv.py`): `samtools bedcov` over 1 kb bins, normalised to the median depth of well-mapped autosomal bins, combined with allele-depth evidence in the gene models. This replaces Sentieon CNVscope.
+2. Copy numbers come from a **depth-based caller** (`calling/cnv.py`): `samtools bedcov` over 1 kb bins, normalised to the median depth of well-mapped autosomal bins, combined with allele-depth evidence in the gene models. This replaces Sentieon CNVscope. With `--cnv_caller cnvkit` the same bins are GC/edge/repeat-corrected and segmented by [CNVkit](https://cnvkit.readthedocs.io) (`cnvkit.py` >= 0.9.12 on PATH, flat reference, Haar segmentation) and re-anchored to the sample's genome-wide diploid depth; the default stays the built-in caller.
 3. Small variants are called per region and per copy number with `gatk HaplotypeCaller --sample-ploidy N`; with known variants available, genotyping is given-alleles.
 4. Variants are phased by the built-in k-modes (short reads) or anchor (long reads) phasers.
 
 ## 8. Differences from upstream and known limits
 
 - No ML rescoring of variant calls (DNAscope + model). Expect more false positives and negatives in difficult segdup sequence than upstream; filter with GATK annotations if needed.
-- Copy-number calling is a simpler heuristic: no GC or mappability correction. Low-coverage or uneven-coverage samples will be less reliable, and the calls were not benchmarked against CNVscope.
+- The default copy-number caller is a simpler heuristic: no GC or mappability correction (`--cnv_caller cnvkit` adds it; that backend is also not benchmarked against CNVscope or the default). Low-coverage or uneven-coverage samples will be less reliable, and the calls were not benchmarked against CNVscope.
 - Long-read small-variant calling uses HaplotypeCaller, which performs poorly on long reads. Treat long-read VCFs with caution.
 - Accuracy and concordance figures in `general.md` and the gene documents are upstream's.
 

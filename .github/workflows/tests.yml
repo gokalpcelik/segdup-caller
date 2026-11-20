@@ -13,7 +13,7 @@ jobs:
       - name: Install external tools and test deps
         shell: bash -el {0}
         run: |
-          conda install -y -c conda-forge -c bioconda gatk4 minimap2 samtools bcftools
+          conda install -y -c conda-forge -c bioconda gatk4 minimap2 samtools bcftools cnvkit
           pip install pytest
       - name: Run tests
         shell: bash -el {0}
