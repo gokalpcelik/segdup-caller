@@ -10,7 +10,7 @@ This guide covers installing and running the fork that replaces Sentieon with GA
 |---|---|
 | Tools on `PATH` | GATK >= 4.2, minimap2 >= 2.24, samtools >= 1.16, bcftools >= 1.16 |
 | Python | >= 3.9 (installed by the package: pysam, pyyaml, colorlog, packaging, scipy, pandas, vcflib) |
-| Java | Needed by GATK (conda installs it with `gatk4`) |
+| Java | Needed by GATK (it must be available to GATK) |
 | Reference | GRCh38, hg19 or b37 FASTA, with `.fai` and a GATK `.dict` |
 | Input reads | Aligned, coordinate-sorted, **duplicate-marked**, indexed BAM/CRAM from whole-genome sequencing, 20x minimum, 30x ideal |
 | Long reads (optional) | Aligned PacBio HiFi or ONT BAM/CRAM |
@@ -24,12 +24,12 @@ The reference build is detected automatically from the FASTA. Contig names must 
 ```bash
 git clone <your fork url> segdup-caller
 cd segdup-caller
-conda env create -f environment.yml     # gatk4, minimap2, samtools, bcftools, python, and the package itself
+conda env create -f environment.yml     # python and the package only; gatk, minimap2, samtools, bcftools must already be on PATH
 conda activate segdup-caller
 segdup-caller --version
 ```
 
-Without conda: install the four tools yourself, then `pip install ./segdup-caller`.
+Without conda: `pip install ./segdup-caller`. In both cases the four tools are not installed for you.
 
 Check the tools are found and recent enough:
 
@@ -162,7 +162,7 @@ Clinical-significance text in the YAML is informational only.
 
 | Message or symptom | Cause and fix |
 |---|---|
-| `no 'gatk' found in the PATH` | Activate the conda env or install GATK. Same for `minimap2`, `samtools`, `bcftools` |
+| `no 'gatk' found in the PATH` | Make sure GATK is on `PATH` (load the module or add it to `PATH`). Same for `minimap2`, `samtools`, `bcftools` |
 | `the pipeline requires gatk version '4.2' or later` | Upgrade the tool |
 | `Reference sequence dictionary does not exist` | Run `samtools dict ref.fa -o ref.dict` |
 | `Index file ... .bai does not exist` | `samtools index` the input |

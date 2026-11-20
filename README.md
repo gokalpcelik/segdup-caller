@@ -76,7 +76,7 @@ Only open-source tools are required; they must be on `PATH`:
 - [samtools (1.16 or later)](http://www.htslib.org/)
 - [bcftools (1.16 or later)](http://www.htslib.org/)
 
-A conda environment with everything is in `environment.yml`:
+`environment.yml` creates a Python environment with the package only; it does not install the tools above, which must already be on `PATH`:
 
 ```bash
 conda env create -f environment.yml && conda activate segdup-caller

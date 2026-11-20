@@ -10,9 +10,11 @@ jobs:
           environment-file: environment.yml
           activate-environment: segdup-caller
           channels: conda-forge,bioconda
-      - name: Install test deps
+      - name: Install external tools and test deps
         shell: bash -el {0}
-        run: pip install pytest
+        run: |
+          conda install -y -c conda-forge -c bioconda gatk4 minimap2 samtools bcftools
+          pip install pytest
       - name: Run tests
         shell: bash -el {0}
         run: pytest tests -q

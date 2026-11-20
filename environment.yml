@@ -4,10 +4,8 @@ channels:
   - bioconda
 dependencies:
   - python>=3.9
-  - gatk4>=4.2
-  - minimap2>=2.24
-  - samtools>=1.16
-  - bcftools>=1.16
   - pip
   - pip:
       - .
+# External tools (gatk >=4.2, minimap2 >=2.24, samtools >=1.16, bcftools >=1.16)
+# are expected on PATH and are not installed here.
