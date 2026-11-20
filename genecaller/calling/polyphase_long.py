@@ -163,12 +163,12 @@ def polyphase_long_reads(
     if bam.use_existing and os.path.exists(out_vcf) and os.path.getsize(out_vcf):
         return
     if ploidy < 2:
-        _symlink_through(in_vcf, out_vcf, bam.sentieon)
+        _symlink_through(in_vcf, out_vcf, bam.bcftools)
         return
 
     variants = _load_variants(in_vcf)
     if not any(v["phaseable"] for v in variants):
-        _passthrough(in_vcf, out_vcf, bam.sentieon)
+        _passthrough(in_vcf, out_vcf, bam.bcftools)
         return
 
     bam_path = bam.clipped_bam if bam.clipped_bam else bam.bam
@@ -180,7 +180,7 @@ def polyphase_long_reads(
 
     n_phaseable = len(phaseable_idx)
     if matrix.shape[0] < ploidy or n_phaseable < 2:
-        _passthrough(in_vcf, out_vcf, bam.sentieon)
+        _passthrough(in_vcf, out_vcf, bam.bcftools)
         return
 
     max_allele = int(max(len(variants[i]["alt"]) for i in phaseable_idx))
@@ -232,4 +232,4 @@ def polyphase_long_reads(
         min_conn=MIN_CONNECTING_READS_LONG,
     )
 
-    _emit_vcf(in_vcf, out_vcf, variants, phaseable_idx, assigned_per_site, ps_per_col, bam.sentieon)
+    _emit_vcf(in_vcf, out_vcf, variants, phaseable_idx, assigned_per_site, ps_per_col, bam.bcftools)

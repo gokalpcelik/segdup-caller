@@ -5,7 +5,7 @@ import subprocess
 import sys
 from .util import IntervalList, GeneMapping, get_data_file
 from .logging import get_logger
-from . import throttle
+from . import throttle, tools
 import heapq
 from collections import namedtuple, Counter
 from scipy.stats import binom, gamma
@@ -75,9 +75,9 @@ class Bam:
         self.segments = {}
         self._depth_coords_cache = {}  # Cache for sorted coordinate lists
         self.overall_depth_std = 0.0
-        self.cnv_model = ""
-        self.lr_model = ""
-        self.sr_model = ""
+        self.cnv_bin_size = 1000  # main.cnv_bin_size
+        self.gatk_java_options = tools.DEFAULT_JAVA_OPTIONS  # main.gatk_java_options
+        self.gatk_min_mapq = tools.DEFAULT_HC_MIN_MAPQ  # main.gatk_min_mapq
         self.prefix = None
         self.sample_name = "SAMPLE"
         self.use_existing = True
@@ -96,24 +96,6 @@ class Bam:
         for k, v in param.items():
             if hasattr(self, k):
                 setattr(self, k, v)
-        if (
-            self.cnv_model
-            and not os.path.exists(self.cnv_model)
-            and not os.path.exists(os.path.dirname(self.cnv_model))
-        ):
-            self.cnv_model = get_data_file(self.cnv_model)
-        if (
-            self.lr_model
-            and not os.path.exists(self.lr_model)
-            and not os.path.exists(os.path.dirname(self.lr_model))
-        ):
-            self.lr_model = get_data_file(self.lr_model)
-        if (
-            self.sr_model
-            and not os.path.exists(self.sr_model)
-            and not os.path.exists(os.path.dirname(self.sr_model))
-        ):
-            self.sr_model = get_data_file(self.sr_model)
         self.threads = multiprocessing.cpu_count()
         self.logger = get_logger(self.__class__.__name__)
 
@@ -139,8 +121,6 @@ class Bam:
         chrs = set(regions.regions.keys())
         if not self.depths:
             param = {}
-            if self.cnv_model:
-                param["model"] = self.cnv_model
             param["region"] = regions.to_region_str(chrs)
             output = os.path.join(f"{self.prefix}.cnv.vcf.gz")
             call_depth(self, output, param)
@@ -188,8 +168,6 @@ class Bam:
         chrs = set(regions.regions.keys())
         if not self.segments:
             param = {}
-            if self.cnv_model:
-                param["model"] = self.cnv_model
             param["region"] = regions.to_region_str(chrs)
             output = f"{self.prefix}.cnv.{'.'.join(chrs)}.vcf.gz"
             call_depth(self, output, param)
@@ -384,14 +362,19 @@ class Bam:
             )
         if self.use_existing and os.path.exists(out_bam) and os.path.getsize(out_bam):
             return results
-        # gene regions only; the lifted CNVscope reads the input and the lifted BAMs (Bam.cnv_inputs)
+        # gene regions only; the lifted CNV step reads the input and the lifted BAMs (Bam.cnv_inputs)
+        ext = ".cram" if out_bam.endswith(".cram") else ".bam"
+        bed = tools.write_region_bed(liftover_bam_intervals(gene), out_prefix + ".regions.bed")
+        subset = out_prefix + ".input_subset" + ext
         cmd = (
-            f"{self.sentieon} driver -r {self.ref} -i {self.bam} -i {' -i '.join(liftover_bams)} "
-            f"--interval {liftover_bam_intervals(gene)} --algo ReadWriter --bam_compression 1 {out_bam}"
+            tools.extract_regions(self.samtools, self.ref, self.bam, bed, subset, self.tmpdir, compression=1)
+            + " && "
+            + tools.merge_bams_cmd(self.samtools, self.ref, [subset] + liftover_bams, out_bam, compression=1)
+            + f" && rm -f {subset} {subset}.bai {subset}.crai"
         )
         self.logger.debug(f"Running command: {cmd}")
         with throttle.slot():
-            result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, shell=True, executable="/bin/bash")
         result.check_returncode()
         return results
 
@@ -461,13 +444,12 @@ class Bam:
             # sq = "\n".join(sq_field)
             regions_arg = "" if crop_first else extract
             # samtools fastq destroys FLAG bits, so dup-marked reads must be dropped here; LPA opts out
-            dup_filter = "-F 0x400 " if exclude_dups else ""
-            cmd = f"{self.samtools} view -F 0x100 -F 0x200 -F 0x800 {dup_filter}-h --reference {self.ref} {input_bam} {regions_arg} |"
-            cmd += f"{self.samtools} fastq -t |"
-            cmd += f'{self.sentieon} minimap2 -y -a -x {x} -R "{rg}" {realign_ref} /dev/stdin |'
-            cmd += f"{self.sentieon} util sort -o {liftover_tmp_bam} --sam2bam -i -"
+            cmd = tools.realign_cmd(
+                self.samtools, self.minimap2, self.ref, input_bam, regions_arg,
+                realign_ref, rg, x, liftover_tmp_bam, exclude_dups=exclude_dups,
+            )
             with throttle.slot():
-                result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+                result = subprocess.run(cmd, capture_output=True, text=True, shell=True, executable="/bin/bash")
             result.check_returncode()
         liftover_tmp_bamh = pysam.AlignmentFile(liftover_tmp_bam, "rb")
         out_bamh = self.init_outbamh(out_bam)
@@ -570,10 +552,13 @@ class Bam:
         fname = os.path.basename(self.bam)
         base, ext = os.path.splitext(fname)
         self.clipped_bam = f"{self.tmpdir}/{base}.{gene.gene_names[0]}{ext}"
-        cmd = f"{self.sentieon} driver -r {self.ref} --interval {interval} --interval_padding 2000 -i {self.bam} --algo ReadWriter {self.clipped_bam}"
+        bed = tools.write_region_bed(interval, f"{self.clipped_bam}.regions.bed", padding=2000)
+        cmd = tools.extract_regions(
+            self.samtools, self.ref, self.bam, bed, self.clipped_bam, self.tmpdir
+        )
         self.logger.debug(f"Running command: {cmd}")
         with throttle.slot():
-            result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, shell=True, executable="/bin/bash")
         result.check_returncode()
 
     def call_variant_all_regions(
@@ -586,8 +571,6 @@ class Bam:
         from .calling.small_var import call_dnascope
         from .calling.phasing import phase_vcf
 
-        if "model" not in params:
-            params["model"] = self.lr_model if self.long_read else self.sr_model
         seq_key = "long_read" if self.long_read else "short_read"
         if not self.clipped_bam:
             self.clip2gene(gene)
@@ -1567,7 +1550,7 @@ class Phased_vcf:
                 "ERROR: exactly two copy numbers required for the gene and its paralog separated by comma. Example: 2,3"
             )
             sys.exit(1)
-        if cns[0] == 2:  # called with DNAscope model. trust as is
+        if cns[0] == 2:  # diploid call, trusted as is
             out_v1s = []
             out_liftover = all_vars
             while all_v1s:

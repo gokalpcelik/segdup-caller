@@ -565,7 +565,7 @@ LPA:                                  # Lp(a) KIV-2 VNTR — no paralog. Standal
                                        # 98/181 confidently split (54%), 87% of those within 2 copies; 2 leaks (1.1%),
                                        # 47/49 catastrophic caught. Gate tuned on the shipped library; retune if the catalog grows.
 main:
-  cnv_model: data/SentieonGeneCaller0.1.bundle/cnv.model
+  cnv_bin_size: 1000                # bin width of the native depth caller
   min_map_qual: 45
   cn_prior_std: 2
   conversion_db: data/hg38/known_gene_conversions.tsv

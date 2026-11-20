@@ -168,15 +168,15 @@ class LPA(Gene):
         return out
 
     def _raw_depth(self, ref_bam: Bam, bam_path: str, regions: str, tag: str) -> float:
-        """Length-weighted mean RAW coverage (MAPQ0) over `regions` via CoverageMetrics.
+        """Length-weighted mean RAW coverage (MAPQ0) over `regions` via `samtools bedcov -Q 0`.
 
-        Uses the same `sentieon driver ... CoverageMetrics --min_map_qual 0` the caller
-        already relies on. Raw (un-normalized) so the collapsed-unit and flank depths are
-        directly comparable, which the CNVscope path is not for a sparse collapsed BAM.
+        Raw (un-normalized) so the collapsed-unit and flank depths are directly comparable,
+        which the depth-caller path is not for a sparse collapsed BAM. bedcov skips
+        unmapped, secondary, QC-fail and duplicate reads by default.
         """
         import subprocess
         import os
-        from genecaller import throttle
+        from genecaller import throttle, tools
 
         tmpdir = ref_bam.tmpdir
         bed = os.path.join(tmpdir, f"{os.path.basename(bam_path)}.{tag}.bed")
@@ -185,23 +185,13 @@ class LPA(Gene):
                 chrom, span = reg.split(":")
                 start, end = span.split("-")
                 fh.write(f"{chrom}\t{int(start) - 1}\t{int(end)}\n")
-        out = os.path.join(tmpdir, f"{os.path.basename(bam_path)}.{tag}.cov")
-        cmd = (
-            f"{ref_bam.sentieon} driver -i {bam_path} -r {ref_bam.ref} "
-            f"--interval {bed} --algo CoverageMetrics --min_map_qual 0 {out}"
-        )
+        cmd = tools.bedcov_cmd(ref_bam.samtools, bed, bam_path, ref_bam.ref, 0)
         with throttle.slot():
-            subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True)
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True)
         num = den = 0.0
-        with open(out + ".sample_interval_summary") as fh:
-            next(fh)  # header
-            for ln in fh:
-                p = ln.rstrip("\n").split("\t")
-                span = p[0].split(":")[1]
-                start, end = span.split("-")
-                length = int(end) - int(start) + 1
-                num += float(p[2]) * length  # col 3 = average_coverage
-                den += length
+        for chrom, start, end, mean in tools.parse_bedcov(res.stdout):
+            num += mean * (end - start)
+            den += end - start
         return num / den if den else 0.0
 
     def _load_library(self) -> None:

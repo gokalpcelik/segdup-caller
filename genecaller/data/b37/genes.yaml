@@ -473,7 +473,7 @@ LPA:                                  # Lp(a) KIV-2 VNTR — no paralog. Standal
     spread_gate: 4
     spread_margin: 1.15
 main:
-  cnv_model: data/SentieonGeneCaller0.1.bundle/cnv.model
+  cnv_bin_size: 1000                # bin width of the native depth caller
   min_map_qual: 45
   cn_prior_std: 2
   conversion_db: data/b37/known_gene_conversions.tsv

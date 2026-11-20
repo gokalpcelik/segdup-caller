@@ -519,12 +519,12 @@ def polyphase_short_reads(
         return
     if ploidy < 2:
         # Caller should have handled this; emit a symlink for safety.
-        _symlink_through(in_vcf, out_vcf, bam.sentieon)
+        _symlink_through(in_vcf, out_vcf, bam.bcftools)
         return
 
     variants = _load_variants(in_vcf)
     if not any(v["phaseable"] for v in variants):
-        _passthrough(in_vcf, out_vcf, bam.sentieon)
+        _passthrough(in_vcf, out_vcf, bam.bcftools)
         return
 
     bam_path = bam.clipped_bam if bam.clipped_bam else bam.bam
@@ -536,7 +536,7 @@ def polyphase_short_reads(
 
     n_phaseable = len(phaseable_idx)
     if matrix.shape[0] < ploidy or n_phaseable < 2:
-        _passthrough(in_vcf, out_vcf, bam.sentieon)
+        _passthrough(in_vcf, out_vcf, bam.bcftools)
         return
 
     max_allele = int(max(len(variants[i]["alt"]) for i in phaseable_idx))
@@ -585,7 +585,7 @@ def polyphase_short_reads(
             ps_per_col[col] = local_ps[c]
 
     # Emit
-    _emit_vcf(in_vcf, out_vcf, variants, phaseable_idx, assigned_per_site, ps_per_col, bam.sentieon)
+    _emit_vcf(in_vcf, out_vcf, variants, phaseable_idx, assigned_per_site, ps_per_col, bam.bcftools)
 
 
 # -- emit helpers -----------------------------------------------------------
@@ -596,7 +596,7 @@ def _emit_vcf(
     phaseable_idx: List[int],
     assigned_per_site: List[List[int]],
     ps_per_col: List[int],
-    sentieon: str,
+    bcftools: str,
 ) -> None:
     # Map (chrom, pos) → (matrix column index, ps, assigned alleles)
     site_info: Dict[Tuple[str, int], Tuple[int, int, List[int]]] = {}
@@ -625,10 +625,10 @@ def _emit_vcf(
     finally:
         out_vh.close()
         in_vh.close()
-    _index_vcf(out_vcf, sentieon)
+    _index_vcf(out_vcf, bcftools)
 
 
-def _passthrough(in_vcf: str, out_vcf: str, sentieon: str) -> None:
+def _passthrough(in_vcf: str, out_vcf: str, bcftools: str) -> None:
     """Copy input VCF unchanged when nothing can be phased (still need PS header)."""
     in_vh = vcflib.VCF(in_vcf)
     out_vh = vcflib.VCF(out_vcf, "w")
@@ -640,10 +640,10 @@ def _passthrough(in_vcf: str, out_vcf: str, sentieon: str) -> None:
     finally:
         out_vh.close()
         in_vh.close()
-    _index_vcf(out_vcf, sentieon)
+    _index_vcf(out_vcf, bcftools)
 
 
-def _symlink_through(in_vcf: str, out_vcf: str, sentieon: str) -> None:
+def _symlink_through(in_vcf: str, out_vcf: str, bcftools: str) -> None:
     if os.path.exists(out_vcf):
         os.remove(out_vcf)
     os.symlink(os.path.abspath(in_vcf), out_vcf)
@@ -654,10 +654,10 @@ def _symlink_through(in_vcf: str, out_vcf: str, sentieon: str) -> None:
             os.remove(out_idx)
         os.symlink(os.path.abspath(in_idx), out_idx)
     else:
-        _index_vcf(out_vcf, sentieon)
+        _index_vcf(out_vcf, bcftools)
 
 
-def _index_vcf(vcf_path: str, sentieon: str) -> None:
-    cmd = f"{sentieon} util vcfindex {vcf_path}"
+def _index_vcf(vcf_path: str, bcftools: str) -> None:
+    cmd = f"{bcftools} index -f -t {vcf_path}"
     result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
     result.check_returncode()

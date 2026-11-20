@@ -1,4 +1,4 @@
-# Sentieon Segdup Gene Caller
+# Segdup Gene Caller (open-source fork)
 
 **Segdup Gene caller** is a variant caller for genes located in segmental duplication regions that contain highly similar homologs or pseudogenes. It can leverage available long-read sequencing data to improve variant calling accuracy.
 
@@ -10,9 +10,9 @@ The Sentieon Segdup Gene Caller has not been validated for clinical diagnostic p
 
 ---
 
-Segdup caller currently supports short reads whole-genome sequencing (WGS), such as those from Illumina, Element Biosciences, MGI, and others. Sentieon provides platform-specific short-read variant calling models. For accurate copy number calling and phasing, Segdup caller recommends a minimum of 20× coverage, with 30× being ideal.
+Segdup caller currently supports short reads whole-genome sequencing (WGS), such as those from Illumina, Element Biosciences, MGI, and others. For accurate copy number calling and phasing, Segdup caller recommends a minimum of 20× coverage, with 30× being ideal.
 
-Segdup caller supports additional long-read data from **PacBio HiFi** or **Oxford Nanopore**, aligned BAM files, using the corresponding Sentieon models.
+Segdup caller supports additional long-read data from **PacBio HiFi** or **Oxford Nanopore**, aligned BAM files.
 
 ---
 
@@ -69,23 +69,36 @@ pip install ./segdup-caller
 
 ## Dependencies
 
-- [Sentieon Genomics software (version 202503 or later)](https://www.sentieon.com/free-trial/)
-- [samtools (version 1.16 or later)](http://www.htslib.org/)
-- [bcftools (version 1.16 or later)](http://www.htslib.org/)
+Only open-source tools are required; they must be on `PATH`:
 
----
+- [GATK (4.2 or later)](https://github.com/broadinstitute/gatk): HaplotypeCaller for small variants
+- [minimap2 (2.24 or later)](https://github.com/lh3/minimap2): read re-alignment for liftover
+- [samtools (1.16 or later)](http://www.htslib.org/)
+- [bcftools (1.16 or later)](http://www.htslib.org/)
 
-## Sentieon Models
+A conda environment with everything is in `environment.yml`:
 
-You can find a list of Sentieon models in our [Sentieon models repository](https://github.com/Sentieon/sentieon-models).
+```bash
+conda env create -f environment.yml && conda activate segdup-caller
+```
+
+The reference FASTA needs a `.fai` index and a GATK sequence dictionary
+(`samtools faidx ref.fa && samtools dict ref.fa -o ref.dict`). Input BAM/CRAM files must be
+aligned, coordinate-sorted, duplicate-marked and indexed.
+
+> **Fork note.** This fork no longer needs Sentieon software, a license or model bundles.
+> Small variants are called with GATK HaplotypeCaller (no ML rescoring) and copy-number
+> depth with a built-in depth caller instead of CNVscope, so results differ from upstream
+> and the validation figures in `doc/` do not apply. Long-read calling uses HaplotypeCaller,
+> which is weak on long reads. `--sr_model`/`--lr_model` are accepted but ignored.
 
 ---
 
 # Usage
 
 ```bash
-usage: segdup-caller [-h] --short SHORT [--long LONG] --sr_model SR_MODEL
-                     [--lr_model LR_MODEL] --reference REFERENCE [--genes GENES]
+usage: segdup-caller [-h] --short SHORT [--long LONG]
+                     --reference REFERENCE [--genes GENES]
                      [--sample_name SAMPLE_NAME] [--sr_prefix SR_PREFIX]
                      [--lr_prefix LR_PREFIX] [--config CONFIG]
                      [--set KEY.PATH=VALUE] --outdir OUTDIR
@@ -105,9 +118,8 @@ Targeted variant caller for genes with highly similar paralogs.
 
   --long LONG, -l LONG      Input long-read BAM or CRAM (optional)
 
-  --sr_model SR_MODEL       Short read model bundle (required)
-
-  --lr_model LR_MODEL       Long read model bundle (required if --long is provided)
+  --gatk-java-options OPTS  JVM options for each GATK call
+                            (default: "-Xmx4g -XX:ParallelGCThreads=1")
 
   --reference REFERENCE, -r REFERENCE
                             Reference file (required)
@@ -172,26 +184,26 @@ segdup-caller --version
 
 **Calling all genes with a short-read input BAM:**
 ```bash
-segdup-caller -s $short_read_bam -r $hg38_REF --sr_model $short_read_model_bundle -o $outdir
+segdup-caller -s $short_read_bam -r $hg38_REF -o $outdir
 ```
 
 **Calling SMN1/SMN2 and CYP2D6 with a short-read input BAM:**
 ```bash
-segdup-caller -s $short_read_bam -r $hg38_REF --sr_model $short_read_model_bundle -g SMN1,CYP2D6 -o $outdir
+segdup-caller -s $short_read_bam -r $hg38_REF -g SMN1,CYP2D6 -o $outdir
 ```
 
 **Controlling parallelization with --workers and --threads:**
 ```bash
 # Process 2 genes concurrently, each using up to 16 threads
-segdup-caller -s $short_read_bam -r $hg38_REF --sr_model $short_read_model_bundle -o $outdir --workers 2 --threads 16
+segdup-caller -s $short_read_bam -r $hg38_REF -o $outdir --workers 2 --threads 16
 
 # Process 8 genes concurrently, each using up to 4 threads
-segdup-caller -s $short_read_bam -r $hg38_REF --sr_model $short_read_model_bundle -o $outdir --workers 8 --threads 4
+segdup-caller -s $short_read_bam -r $hg38_REF -o $outdir --workers 8 --threads 4
 ```
 
 **Producing a single merged VCF across all called genes:**
 ```bash
-segdup-caller -s $short_read_bam -r $hg38_REF --sr_model $short_read_model_bundle -o $outdir --merge_vcf
+segdup-caller -s $short_read_bam -r $hg38_REF -o $outdir --merge_vcf
 ```
 This writes `$outdir/<sample_name>.merged.vcf.gz` (bgzipped + tabix-indexed) in addition to the per-gene result VCFs. Every record carries an `INFO/GENE` tag identifying its source gene, and the header is the union of every per-gene VCF's INFO / FORMAT / FILTER / ALT / contig declarations — avoiding the header-conflict failures of post-hoc `bcftools concat`.
 

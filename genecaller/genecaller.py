@@ -15,11 +15,9 @@ from genecaller.util import (
     get_data_file,
     get_software_versions,
     merge_gene_vcfs,
-    read_bundle_info,
     Reference,
 )
 from genecaller.bam_process import Bam, liftover_bam_intervals
-from genecaller.calling.small_var import validate_pop_vcf_coverage
 from genecaller.calling.cnv import source_cnvscope, staged_table
 from genecaller.gene import Gene
 from genecaller.genes import get_gene_class
@@ -46,7 +44,8 @@ def run_order(sections: list) -> list:
 
 
 CALLING_MIN_VERSIONS = {
-    "sentieon driver": Version("202503"),
+    "gatk": Version("4.2"),
+    "minimap2": Version("2.24"),
     "bcftools": Version("1.16"),
     "samtools": Version("1.16"),
 }
@@ -212,7 +211,6 @@ def _init_read_data(input_files, ref, params, gene_name) -> dict:
     sr_params["prefix"] = (
         f"{params['tmpdir']}/{params['sample_name']}.{gene_name}.{params['sr_prefix']}"
     )
-    sr_params["model"] = params["sr_model"]
     short_bam = Bam(short, ref, sr_params)
     short_bam.source_cnv = params.get("source_cnvscope")
     read_data = {"short_read": {"bam": short_bam, "params": sr_params}}
@@ -222,8 +220,6 @@ def _init_read_data(input_files, ref, params, gene_name) -> dict:
         lr_params["prefix"] = (
             f"{params['tmpdir']}/{params['sample_name']}.{gene_name}.{params['lr_prefix']}"
         )
-        if "lr_model" in params:
-            lr_params["model"] = params["lr_model"]
         lr_params.pop("input_vcf", None)
         long_bam = Bam(long, ref, lr_params)
         long_bam.source_cnv = params.get("source_cnvscope")
@@ -273,7 +269,6 @@ class GeneCaller:
         self.read_data = {}
         self.params = {}
         self.ref = ""
-        self.reset_tmpdir = False
 
     def setup_paths(self) -> dict[str, str]:
         cmds = {}
@@ -329,19 +324,6 @@ class GeneCaller:
         logger.info(
             f" * Genes: {' '.join([g.gene_names[0] for g in self.genes if g != 'main'])}"
         )
-        logger.info(f" * short read model: {self.params['sr_model']}")
-        sr_vcf_id = read_bundle_info(
-            os.path.dirname(self.params["sr_model"])
-        ).get("SentieonVcfID")
-        if sr_vcf_id:
-            logger.info(f"   (population model, SentieonVcfID={sr_vcf_id})")
-        if self.params.get("lr_model", None):
-            logger.info(f" * long read model: {self.params['lr_model']}")
-            lr_vcf_id = read_bundle_info(
-                os.path.dirname(self.params["lr_model"])
-            ).get("SentieonVcfID")
-            if lr_vcf_id:
-                logger.info(f"   (population model, SentieonVcfID={lr_vcf_id})")
         logger.info(f" * Parallel threads: {self.params['threads']}")
         logger.info(f" * Parallel workers: {self.params['workers']}")
         logger.info(f" * Output directory: {self.params['outdir']}")
@@ -383,12 +365,13 @@ class GeneCaller:
         parser.add_argument(
             "--long", "-l", help="Input long-read BAM or CRAM (optional)"
         )
+        # Sentieon model bundles are no longer used; accepted so old command lines keep working.
+        parser.add_argument("--sr_model", help=argparse.SUPPRESS)
+        parser.add_argument("--lr_model", help=argparse.SUPPRESS)
         parser.add_argument(
-            "--sr_model", required=True, help="Short read model bundle (required)"
-        )
-        parser.add_argument(
-            "--lr_model",
-            help="Long read model bundle (required if --long is available)",
+            "--gatk-java-options",
+            default=None,
+            help="JVM options for each GATK call (default: '-Xmx4g -XX:ParallelGCThreads=1')",
         )
         parser.add_argument("--reference", "-r", required=True, help="Reference file")
         parser.add_argument(
@@ -478,10 +461,6 @@ class GeneCaller:
                 raise Exception(f"Index file {input}.bai does not exist.")
             if input.endswith("cram") and not os.path.exists(input + ".crai"):
                 raise Exception(f"Index file {input}.crai does not exist.")
-        if args.long and not args.lr_model:
-            raise Exception(
-                "Long read model is not specified. Please download the long read model from Sentieon"
-            )
         if not os.path.exists(args.reference):
             raise Exception(f"Reference file {args.reference} does not exist.")
         if not os.path.exists(args.reference + ".fai"):
@@ -513,17 +492,12 @@ class GeneCaller:
                 logger.error(f"Invalid --set override {e}")
                 sys.exit(2)
             logger.info(f"Config override applied: {applied}")
-        config["main"]["sr_model"] = args.sr_model + "/dnascope.model"
-        if args.lr_model:
-            config["main"]["lr_model"] = args.lr_model + "/diploid_model"
-
-        # Confirm any population-flavor model bundle has a matching pop_vcf
-        # shipped with segdup-caller (data/pop_vcfs.yaml). Non-population
-        # bundles pass through. Exits with a clear message on miss.
-        bundle_paths = [args.sr_model]
-        if args.lr_model:
-            bundle_paths.append(args.lr_model)
-        validate_pop_vcf_coverage(bundle_paths, self.build)
+        if args.gatk_java_options:
+            config["main"]["gatk_java_options"] = args.gatk_java_options
+        if args.sr_model or args.lr_model:
+            logger.warning(
+                "--sr_model/--lr_model are ignored: Sentieon model bundles are no longer used."
+            )
 
         # If no genes specified, use all genes available in the selected config
         if args.genes:
@@ -571,15 +545,7 @@ class GeneCaller:
             sample_name = args.sample_name
         self.params = config["main"]
         os.makedirs(args.outdir, exist_ok=True)
-        sent_tmpdir = os.environ.get("SENTIEON_TMPDIR")
-        if sent_tmpdir:
-            tmpdir = tempfile.mkdtemp(dir=sent_tmpdir, prefix="job")
-        else:
-            tmpdir = tempfile.mkdtemp(dir=args.outdir, prefix=f"{sample_name}_tmp")
-            os.environ["SENTIEON_TMPDIR"] = (
-                tmpdir  # this is needed for parallel jobs of Sentieon not conflicting each other
-            )
-            self.reset_tmpdir = True
+        tmpdir = tempfile.mkdtemp(dir=args.outdir, prefix=f"{sample_name}_tmp")
         # Set global logging level
         set_global_log_level(args.log_level)
         # Update the logger level since it was created before global level was set
@@ -674,21 +640,13 @@ class GeneCaller:
             logger.error(f"Reference index file does not exist: {ref_index}")
             sys.exit(1)
 
-        # Check model bundles
-        sr_model_path = self.params["sr_model"]
-        actual_sr_model_path = get_data_file(sr_model_path)
-        if not actual_sr_model_path:
-            logger.error(f"Short read model file does not exist: {sr_model_path}")
-            sys.exit(1)
-
-        if long_bam and "lr_model" in self.params:
-            lr_model_path = self.params["lr_model"]
-            actual_lr_model_path = get_data_file(lr_model_path)
-            if not actual_lr_model_path:
-                logger.error(f"Long read model file does not exist: {lr_model_path}")
-                sys.exit(1)
-        elif long_bam:
-            logger.error("Long read model is required when long read BAM is provided")
+        # GATK requires a sequence dictionary next to the reference (genome.fa -> genome.dict)
+        ref_dict = os.path.splitext(self.ref)[0] + ".dict"
+        if not os.path.exists(ref_dict) and not os.path.exists(self.ref + ".dict"):
+            logger.error(
+                f"Reference sequence dictionary does not exist: {ref_dict}. "
+                f"Create it with: samtools dict {self.ref} -o {ref_dict}"
+            )
             sys.exit(1)
 
         logger.info("All required input files and indices validated successfully")
@@ -713,7 +671,7 @@ class GeneCaller:
         results = {}
         max_workers = min(self.params["workers"], len(self.genes))
 
-        # Cap total concurrent sentieon driver subprocesses across all workers.
+        # Cap total concurrent tool subprocesses across all workers.
         slot_sem = Semaphore(self.params["threads"])
 
         if max_workers > 1:
@@ -758,12 +716,6 @@ class GeneCaller:
         return results
 
     def call(self) -> None:
-        if not os.environ.get("SENTIEON_LICENSE"):
-            logger.error(
-                "SENTIEON_LICENSE environment variable is not set. "
-                "Please set it (e.g. export SENTIEON_LICENSE=<server:port> or path to license file) before running."
-            )
-            sys.exit(1)
         self.load_params()
         self._validate_input_files()
 
@@ -805,7 +757,6 @@ class GeneCaller:
             "job_options": {
                 "short_read_bam": self.args.short,
                 "reference": self.args.reference,
-                "sr_model": self.args.sr_model,
                 "genes": self.args.genes if self.args.genes else "all",
                 "outdir": self.args.outdir,
                 "sample_name": self.params["sample_name"],
@@ -819,7 +770,6 @@ class GeneCaller:
 
         if self.args.long:
             config_section["job_options"]["long_read_bam"] = self.args.long
-            config_section["job_options"]["lr_model"] = self.args.lr_model
         if self.args.config:
             config_section["job_options"]["config"] = self.args.config
         if self.args.overrides:
@@ -853,5 +803,3 @@ class GeneCaller:
                     f"Run output is unaffected; remove this directory manually if needed."
                 )
 
-        if self.reset_tmpdir:
-            os.environ.pop("SENTIEON_TMPDIR", None)

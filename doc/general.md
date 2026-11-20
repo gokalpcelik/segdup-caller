@@ -78,7 +78,7 @@ LPA has no paralog. Its KIV-2 total comes from the depth ratio of the collapsed 
 
 **Purpose**: Call SNVs and indels with appropriate ploidy for each region.
 
-1. **Ploidy-aware calling**: Uses Sentieon DNAscope with ploidy adjusted by copy number:
+1. **Ploidy-aware calling**: Uses GATK HaplotypeCaller with ploidy adjusted by copy number:
    - **CN=0**: No variant calling (region deleted)
    - **CN=1**: Haploid calling mode
    - **CN=2**: Standard diploid calling
@@ -218,7 +218,7 @@ config:
   job_options:        # the run's command-line settings
   resource_usage:     # memory, CPU and wall time
   run_date:
-  software_versions:  # segdup-caller, Sentieon, samtools, bcftools
+  software_versions:  # segdup-caller, gatk, minimap2, samtools, bcftools
 merged_vcf: output/HG002.merged.vcf.gz
 ```
 
@@ -247,7 +247,9 @@ merged_vcf: output/HG002.merged.vcf.gz
 
 ## Validation Methodology
 
-The Sentieon Segdup Caller has been validated using well-characterized reference datasets:
+> **Fork note:** the figures below and in the per-gene documents were produced by the upstream Sentieon-based pipeline (DNAscope, CNVscope). This fork uses GATK HaplotypeCaller and a built-in depth caller; they have not been re-validated.
+
+The upstream Sentieon Segdup Caller was validated using well-characterized reference datasets:
 
 ### Validation Cohorts
 
@@ -277,15 +279,15 @@ The Sentieon Segdup Caller has been validated using well-characterized reference
 ### Basic Command
 
 ```bash
-segdup-caller -s <sample.bam or .cram> -r <reference.fa> --sr_model <short-read model bundle> -o <output_directory>
+segdup-caller -s <sample.bam or .cram> -r <reference.fa> -o <output_directory>
 ```
 
-Without `-g`, the caller runs every supported region. To add long reads, pass `-l <long-read BAM> --lr_model <long-read model bundle>`. The [README](../README.md) lists every option and the Sentieon model bundles.
+Without `-g`, the caller runs every supported region. To add long reads, pass `-l <long-read BAM>`. The [README](../README.md) lists every option.
 
 ### Example: Multi-Gene Analysis
 
 ```bash
-segdup-caller -s NA12878.bam -r GRCh38.fa --sr_model <short-read model bundle> \
+segdup-caller -s NA12878.bam -r GRCh38.fa \
   -g GBA,CYP2D6,HBA,SMN1,PMS2 -o results/NA12878
 ```
 
@@ -301,12 +303,13 @@ segdup-caller -s NA12878.bam -r GRCh38.fa --sr_model <short-read model bundle> \
 
 - **Reference genome**: GRCh38 (hg38) or GRCh37 (hg19 or b37). The build is detected automatically from the input. NCF1 is available on GRCh38 only.
 - **Coverage**: at least 20×; 30× is ideal
-- **Short-read sequencing platform**: short-read WGS such as Illumina, Element Biosciences, MGI and others, with the matching Sentieon short-read model
-- **Long reads (optional)**: aligned PacBio HiFi or Oxford Nanopore BAM files, with the matching Sentieon long-read model
+- **Short-read sequencing platform**: short-read WGS such as Illumina, Element Biosciences, MGI and others
+- **Long reads (optional)**: aligned PacBio HiFi or Oxford Nanopore BAM files
 
 ### Software Dependencies
 
-- **Sentieon Genomics Software** (202503 or later): Commercial variant calling platform
+- **GATK** (4.2 or later): HaplotypeCaller for small-variant calling
+- **minimap2** (2.24 or later): read re-alignment used for liftover
 - **samtools** (1.16 or later): BAM file manipulation
 - **bcftools** (1.16 or later): VCF file processing
 - **Python** (3.9 or later) with packages: pysam, pyyaml, colorlog, packaging, scipy, pandas, vcflib

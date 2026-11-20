@@ -9,59 +9,246 @@ then reads those outputs by path (`staged_run`).
 
 import os
 import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import vcflib
 
-from .. import throttle
+from .. import throttle, tools
 from ..util import IntervalList
 
-# output paths blanked: two runs with the same template are the same command
-_OUT, _NORM = "@CNV_OUT@", "@CNV_NORM@"
+DEFAULT_BIN_SIZE = 1000
+CONFIDENT_MAPQ = 30  # reads at or above this MAPQ carry "confident" depth
+MIN_CONFIDENT_FRAC = 0.95  # bins used to set the diploid depth must be this mappable
+NORM_BINS_PER_CHROM = 100
+MIN_AUTOSOME_LEN = 10_000_000  # autosomes shorter than this are not used to set the diploid depth
 
 
-def cnvscope_cmd(bam: Any, output: str, param: Dict[str, Any]) -> str:
+def _inputs(bam: Any) -> List[str]:
     # a lifted Bam may read several BAMs at once (cnv_inputs); an input Bam reads bam.bam
-    inputs = getattr(bam, "cnv_inputs", None) or [bam.bam]
-    driver_opt = param.get("driver_opt", "") + "".join(f" -i {p}" for p in inputs)
-    driver_opt += f" -r {bam.ref}"
-    algo_opt = param.get("algo_opt", "")
-    if "region" in param:
-        driver_opt += f" --interval {param['region']}"
-    if "output_norm" in param:
-        algo_opt += f" --output_normalized {param['output_norm']}"
-    if "model" in param:
-        algo_opt += f" --model {param['model']}"
-    else:
-        raise Exception("Model is not specified for CNVscope.")
-    return f"{bam.sentieon} driver {driver_opt} --algo CNVscope {algo_opt} {output}"
+    return list(getattr(bam, "cnv_inputs", None) or [bam.bam])
 
 
 def cnvscope_template(bam: Any, param: Dict[str, Any]) -> str:
-    return cnvscope_cmd(bam, _OUT, dict(param, output_norm=_NORM))
+    """Key identifying a depth run: two runs with the same key produce the same output."""
+    return "|".join(
+        [
+            "native_depth",
+            ",".join(_inputs(bam)),
+            str(param.get("region", "")),
+            str(getattr(bam, "cnv_bin_size", DEFAULT_BIN_SIZE)),
+        ]
+    )
 
 
-def _run(bam: Any, cmd: str) -> None:
+def _run(bam: Any, cmd: str) -> str:
     bam.logger.debug(f"Running command: {cmd}")
     with throttle.slot():
-        result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
-    result.check_returncode()
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, shell=True, executable="/bin/bash"
+        )
+    if result.returncode:
+        raise Exception(result.stderr)
+    return result.stdout
+
+
+def _fai_lengths(ref: str) -> Dict[str, int]:
+    with open(ref + ".fai") as fh:
+        return {f[0]: int(f[1]) for f in (line.split("\t") for line in fh)}
+
+
+def _bins(region: str, lengths: Dict[str, int], size: int) -> List[Tuple[str, int, int]]:
+    """Fixed-grid bins (0-based half-open) covering ``region`` ("chr" or "chr:s-e", comma separated)."""
+    out = []
+    for part in [p for p in region.replace(" ", ",").split(",") if p]:
+        if ":" in part:
+            chrom, span = part.rsplit(":", 1)
+            s, e = (int(x) for x in span.split("-"))
+            s -= 1
+        else:
+            chrom, s, e = part, 0, lengths[part]
+        e = min(e, lengths.get(chrom, e))
+        pos = (s // size) * size
+        while pos < e:
+            out.append((chrom, max(pos, s), min(pos + size, e)))
+            pos += size
+    return out
+
+
+def _depth_table(
+    bam: Any, bins: List[Tuple[str, int, int]], bed: str, inputs: List[str]
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Mean depth per bin: (all reads, reads with MAPQ >= CONFIDENT_MAPQ), summed over ``inputs``."""
+    with open(bed, "w") as fh:
+        for c, s, e in bins:
+            fh.write(f"{c}\t{s}\t{e}\n")
+
+    def one(q: int) -> np.ndarray:
+        # one bedcov per input so each is queried by its own index; the sums are added
+        total = np.zeros(len(bins))
+        for p in inputs:
+            out = _run(bam, tools.bedcov_cmd(bam.samtools, bed, p, bam.ref, q))
+            total += np.array([r[3] for r in tools.parse_bedcov(out)])
+        return total
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_all, f_conf = pool.submit(one, 0), pool.submit(one, CONFIDENT_MAPQ)
+        return f_all.result(), f_conf.result()
+
+
+_DIPLOID_CACHE: Dict[Tuple[str, str], float] = {}
+
+
+def diploid_depth(bam: Any) -> float:
+    """Typical per-base depth of a diploid unique region of this sample.
+
+    Median confident depth over bins spread across the middle of the autosomes, taken from the
+    sample's original BAM (also for a lifted Bam, whose merge holds the gene regions only).
+    Cached per (input, reference).
+    """
+    src = _inputs(bam)[0]
+    key = (src, bam.ref)
+    if key in _DIPLOID_CACHE:
+        return _DIPLOID_CACHE[key]
+    lengths = _fai_lengths(bam.ref)
+    size = getattr(bam, "cnv_bin_size", DEFAULT_BIN_SIZE)
+    bins = []
+    for chrom, ln in lengths.items():
+        name = chrom[3:] if chrom.startswith("chr") else chrom
+        if not name.isdigit() or not 1 <= int(name) <= 22 or ln < MIN_AUTOSOME_LEN:
+            continue
+        lo, hi = int(ln * 0.1), int(ln * 0.9)
+        step = max(size, (hi - lo) // NORM_BINS_PER_CHROM)
+        bins += [(chrom, p, p + size) for p in range(lo, hi - size, step)]
+    if not bins:
+        raise Exception(
+            "Cannot estimate the diploid depth: no usable autosome in the reference index"
+        )
+    fd, bed = tempfile.mkstemp(suffix=".bed", dir=bam.tmpdir)
+    os.close(fd)
+    try:
+        d_all, d_conf = _depth_table(bam, bins, bed, [src])
+    finally:
+        os.remove(bed)
+    ok = (d_all > 0) & (d_conf >= MIN_CONFIDENT_FRAC * d_all)
+    if ok.sum() < 20:
+        raise Exception(
+            f"Too few well-mapped bins ({int(ok.sum())}) in {src} to estimate the diploid depth"
+        )
+    value = float(np.median(d_conf[ok]))
+    if value <= 0:
+        raise Exception(f"Estimated diploid depth of {src} is zero")
+    _DIPLOID_CACHE[key] = value
+    return value
+
+
+def _segments(rows: pd.DataFrame, cn: np.ndarray) -> List[Tuple[int, int]]:
+    """Index ranges [i, j) of adjacent bins sharing a copy number and a mapping-quality class."""
+    out, i, n = [], 0, len(rows)
+    contig, start, end = rows["contig"].values, rows["start"].values, rows["end"].values
+    hq = rows["MQ"].values > 50
+    while i < n:
+        j = i + 1
+        while (
+            j < n
+            and contig[j] == contig[i]
+            and start[j] == end[j - 1]
+            and cn[j] == cn[i]
+            and hq[j] == hq[i]
+        ):
+            j += 1
+        out.append((i, j))
+        i = j
+    return out
+
+
+def _write_vcf(bam: Any, rows: pd.DataFrame, cn: np.ndarray, out_vcf: str) -> None:
+    lengths = _fai_lengths(bam.ref)
+    chroms = list(dict.fromkeys(rows["contig"]))
+    lines = ["##fileformat=VCFv4.2"]
+    lines += [f"##contig=<ID={c},length={lengths[c]}>" for c in chroms]
+    lines += [
+        '##INFO=<ID=END,Number=1,Type=Integer,Description="Segment end">',
+        '##INFO=<ID=CNT,Number=1,Type=Integer,Description="Copy number (2 x normalized depth, rounded)">',
+        '##FORMAT=<ID=MQS,Number=1,Type=Float,Description="Mean MAPQ proxy of the segment">',
+        '##FORMAT=<ID=DPS,Number=2,Type=Float,Description="Mean and SD of normalized depth">',
+        '##FORMAT=<ID=DP0S,Number=2,Type=Float,Description="Mean and SD of normalized depth, all reads">',
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE",
+    ]
+    for i, j in _segments(rows, cn):
+        r = rows.iloc[i:j]
+        lines.append(
+            "\t".join(
+                [
+                    str(r["contig"].iloc[0]),
+                    str(int(r["start"].iloc[0]) + 1),
+                    ".",
+                    "N",
+                    "<CNV>",
+                    ".",
+                    ".",
+                    f"END={int(r['end'].iloc[-1])};CNT={int(cn[i])}",
+                    "MQS:DPS:DP0S",
+                    f"{r['MQ'].mean():.2f}:{r['DP'].mean():.4f},{r['DP'].std(ddof=0):.4f}"
+                    f":{r['DP0'].mean():.4f},{r['DP0'].std(ddof=0):.4f}",
+                ]
+            )
+        )
+    raw = out_vcf + ".tmp.vcf"
+    with open(raw, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    try:
+        _run(bam, tools.compress_index_vcf_cmd(bam.bcftools, out_vcf, raw))
+    finally:
+        os.remove(raw)
 
 
 def call_cnvscope(bam: Any, output: str, param: Dict[str, Any]) -> None:
+    """Depth-based copy-number segmentation over ``param["region"]`` (replaces Sentieon CNVscope).
+
+    Writes the per-bin table ``param["output_norm"]`` (contig,start,end,MQ,DP,DP0) and a segment
+    VCF ``output`` (INFO CNT; FORMAT MQS, DPS, DP0S) that ``call_depth`` reads. Depth is normalized
+    so a diploid unique region is 1.0. MQ is a proxy: 60 x the fraction of depth carried by reads
+    with MAPQ >= CONFIDENT_MAPQ. No GC or mappability correction is applied.
+    """
     if bam.use_existing and os.path.exists(output) and os.path.getsize(output):
         return
-    _run(bam, cnvscope_cmd(bam, output, param))
+    if "region" not in param:
+        raise Exception("A region is required for the depth caller.")
+    norm_path = param["output_norm"]
+    size = getattr(bam, "cnv_bin_size", DEFAULT_BIN_SIZE)
+    bins = _bins(param["region"], _fai_lengths(bam.ref), size)
+    if not bins:
+        raise Exception(f"No bins for region {param['region']}")
+    scale = diploid_depth(bam)
+    fd, bed = tempfile.mkstemp(suffix=".bed", dir=bam.tmpdir)
+    os.close(fd)
+    try:
+        d_all, d_conf = _depth_table(bam, bins, bed, _inputs(bam))
+    finally:
+        os.remove(bed)
+    frac = np.where(d_all > 0, d_conf / np.where(d_all > 0, d_all, 1.0), 0.0)
+    rows = pd.DataFrame(
+        {
+            "contig": [b[0] for b in bins],
+            "start": [b[1] for b in bins],
+            "end": [b[2] for b in bins],
+            "MQ": 60.0 * np.minimum(frac, 1.0),
+            "DP": d_conf / scale,
+            "DP0": d_all / scale,
+        }
+    )
+    rows.to_csv(norm_path, sep="\t", index=False)
+    cn = np.rint(2 * rows["DP"].values).astype(int)
+    _write_vcf(bam, rows, cn, output)
 
 
-def _segment_param(bam: Any, chrom: str, output_norm: str = _NORM) -> Dict[str, Any]:
+def _segment_param(bam: Any, chrom: str, output_norm: str = "") -> Dict[str, Any]:
     # what a gene's segmentation passes call_cnvscope for one chromosome
-    param = {"region": chrom, "output_norm": output_norm}
-    if bam.cnv_model:
-        param["model"] = bam.cnv_model
-    return param
+    return {"region": chrom, "output_norm": output_norm}
 
 
 def source_cnvscope(
@@ -225,7 +412,7 @@ def trim_to_region_vcf(bam: Any, region: str, in_vcf: str, out_vcf: str) -> None
         region_opt = f"-r {region}"
     cmd = (
         f"{bam.bcftools} view {region_opt} {in_vcf} "
-        f"| {bam.sentieon} util vcfconvert - {out_vcf}"
+        f"| {bam.bcftools} view -Oz -o {out_vcf} - && {bam.bcftools} index -f -t {out_vcf}"
     )
     result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
     result.check_returncode()

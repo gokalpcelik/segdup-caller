@@ -33,7 +33,7 @@ def phase_vcf(
                 os.remove(out_vcf_idx)
             os.symlink(os.path.abspath(in_vcf_idx), out_vcf_idx)
         else:
-            cmd = f"{bam.sentieon} util vcfindex {out_vcf}"
+            cmd = f"{bam.bcftools} index -f -t {out_vcf}"
             result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
             result.check_returncode()
         return
@@ -68,6 +68,6 @@ def phase_vcf(
         )
     result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
     result.check_returncode()
-    cmd = f"{bam.sentieon} util vcfindex {out_vcf}"
+    cmd = f"{bam.bcftools} index -f -t {out_vcf}"
     result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
     result.check_returncode()
