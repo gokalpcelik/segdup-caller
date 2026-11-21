@@ -604,8 +604,19 @@ class Bam:
         conversion_n_values: Optional[Dict[int, int]] = None,  # position -> N value
         baseline_cn: int = 2,  # baseline ploidy for depth normalization
         sigma_scaling: str = "constant",  # "constant", "linear", or "sublinear"
+        all_reads: bool = False,  # score the all-read depth (mean0) instead of the MAPQ>=30 depth
     ) -> float:
-        probe_depths = [baseline_cn * d.mean for d in self.get_depth(region)]
+        # Depth is normalized to the sample's autosomal diploid depth (diploid = 1). A haploid
+        # baseline (male non-PAR chrX, baseline_cn == 1) has to be rescaled so haploid = 1,
+        # as the Sentieon CNVscope output was; otherwise its depth reads as half the copy number.
+        ploidy_scale = 2.0 / baseline_cn
+        # all_reads: in a liftover BAM the reads kept at the paralog's own locus are mostly
+        # MAPQ 0 (near-identical copies, e.g. SMN1/SMN2, IKBKG/IKBKGP1) and the MAPQ>=30 depth
+        # drops them, so only about half of the copies would be counted.
+        probe_depths = [
+            baseline_cn * ploidy_scale * (d.mean0 if all_reads else d.mean)
+            for d in self.get_depth(region)
+        ]
         num_probes = len(probe_depths)
         if num_probes == 0:
             return log_prior
@@ -615,19 +626,20 @@ class Bam:
         # to prevent degenerate heavy-tailed gamma distributions.
         # For CN >= 1: apply configured scaling mode, floored at overall_depth_std.
         cn_eff = max(cn, err_rate)
-        cv = self.overall_depth_std / max(baseline_cn, err_rate)
+        depth_std = self.overall_depth_std * ploidy_scale
+        cv = depth_std / max(baseline_cn, err_rate)
         if cn_eff < 1.0:
             sigma_scaled = max(cn_eff * cv, err_rate)
         elif sigma_scaling == "linear":
-            sigma_scaled = max(cn_eff * cv, self.overall_depth_std, err_rate)
+            sigma_scaled = max(cn_eff * cv, depth_std, err_rate)
         elif sigma_scaling == "sublinear":
             sigma_scaled = max(
-                np.sqrt(cn_eff / max(baseline_cn, err_rate)) * self.overall_depth_std,
-                self.overall_depth_std,
+                np.sqrt(cn_eff / max(baseline_cn, err_rate)) * depth_std,
+                depth_std,
                 err_rate,
             )
         else:  # "constant"
-            sigma_scaled = self.overall_depth_std
+            sigma_scaled = depth_std
         log_prob_depth_sum = sum(
             CopyNumberModel.gamma_logpdf(
                 cn_eff, max(depth, err_rate), sigma_scaled

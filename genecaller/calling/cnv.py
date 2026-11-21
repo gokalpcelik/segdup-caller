@@ -438,7 +438,7 @@ def call_depth(bam: Any, output: str, param: Dict[str, Any]) -> None:
                 dp[0] / bam.dp_norm,
                 dp[1] / bam.dp_norm,
                 dp0[0] / bam.dp_norm,
-                dp0[0] / bam.dp_norm,
+                dp0[1] / bam.dp_norm,
             )
         )
     depth_df = pd.read_csv(tmp_output_norm, sep="\t")[depth_fields].copy()

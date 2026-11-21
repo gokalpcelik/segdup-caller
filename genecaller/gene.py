@@ -1239,6 +1239,7 @@ class Gene:
                     conversion_n_values=conversion_n_values,
                     baseline_cn=self.baseline_cn,
                     sigma_scaling=sigma_liftover,
+                    all_reads=True,
                 )
                 total_prob += liftover_prob
 
