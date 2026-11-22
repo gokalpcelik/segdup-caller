@@ -234,6 +234,8 @@ either platform**.
 
 ### Validation scope and known gaps
 
+> **Warning.** STRC, STRCP1 and CATSPER2 copy-number estimates may not be reliable. On one genome checked against long-read (Paraphase) results, the short-read depth across the STRC-CATSPER2 interval read about 1.37 times its flanks, so the caller reported STRC 3 / STRCP1 2 / CATSPER2 3 where the long reads gave 2 / 2 (CATSPER2 window: 4 haplotypes). Confirm any STRC or CATSPER2 gain or loss orthogonally. The warning is printed in the gene's `cn_interpretation`.
+
 Validated (GRCh38 Illumina unless noted):
 
 - STRC copy number and recurrent-deletion detection — 5/5 real carriers on the 226-sample

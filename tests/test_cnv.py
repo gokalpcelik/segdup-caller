@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import pandas as pd
 import pytest
@@ -7,6 +8,11 @@ import vcflib
 from genecaller.calling import cnv
 
 from conftest import need_tools
+
+
+need_cnvkit = pytest.mark.skipif(not shutil.which("cnvkit.py"), reason="cnvkit.py is required")
+
+CALLERS = ["depth", pytest.param("cnvkit", marks=need_cnvkit)]
 
 
 @pytest.fixture(autouse=True)
@@ -22,8 +28,11 @@ def test_diploid_depth_close_to_truth(make_bam):
 
 
 @need_tools
-def test_depth_caller_finds_het_deletion_and_low_mapq(make_bam, tmp_path):
+@pytest.mark.parametrize("caller", CALLERS)
+def test_depth_caller_finds_het_deletion_and_low_mapq(make_bam, tmp_path, caller):
     bam = make_bam()
+    bam.cnv_caller = caller
+    bam.cnvkit = shutil.which("cnvkit.py") or "cnvkit.py"
     out = str(tmp_path / "x.vcf.gz")
     norm = str(tmp_path / "x.norm.tsv")
     cnv.call_cnvscope(bam, out, {"region": "chr1,chr2", "output_norm": norm})
@@ -48,11 +57,51 @@ def test_depth_caller_finds_het_deletion_and_low_mapq(make_bam, tmp_path):
 
 
 @need_tools
-def test_call_depth_populates_segments_and_depths(make_bam, tmp_path):
+@pytest.mark.parametrize("caller", CALLERS)
+def test_call_depth_populates_segments_and_depths(make_bam, tmp_path, caller):
     bam = make_bam()
+    bam.cnv_caller = caller
+    bam.cnvkit = shutil.which("cnvkit.py") or "cnvkit.py"
     bam.prefix = str(tmp_path / "p")
     cnv.call_depth(bam, str(tmp_path / "c.vcf.gz"), {"region": "chr1:70000-110000"})
     assert bam.depths["chr1"] and bam.segments["chr1"]
     depths = bam.get_depth("chr1:85000-95000")
     assert depths and all(0.3 < d.mean < 0.7 for d in depths)
     assert bam.overall_depth_std >= 0
+
+
+@need_tools
+def test_template_key_differs_by_caller(make_bam):
+    bam = make_bam()
+    param = {"region": "chr1"}
+    depth_key = cnv.cnvscope_template(bam, param)
+    bam.cnv_caller = "cnvkit"
+    assert cnv.cnvscope_template(bam, param) != depth_key
+
+
+def _table(tmp_path, depths, tag="short_read", chrom="chr1"):
+    rows = ["contig\tstart\tend\tMQ\tDP\tDP0"]
+    for i, (mq, dp) in enumerate(depths):
+        rows.append(f"{chrom}\t{i * 1000}\t{(i + 1) * 1000}\t{mq}\t{dp}\t{dp}")
+    path = tmp_path / f"{tag}.{chrom}.norm.tsv"
+    path.write_text("\n".join(rows) + "\n")
+
+    class B:
+        source_cnv = {"cmd": (str(tmp_path / "x.vcf.gz"), str(path))}
+
+    return B()
+
+
+def test_flank_factor_uses_unique_flank_bins(tmp_path):
+    # 100 flank bins at 1.15 (MAPQ 60) and bins at 2.0 with low MAPQ that must be ignored
+    bam = _table(tmp_path, [(60, 1.15)] * 100 + [(20, 2.0)] * 50)
+    f, n = cnv.flank_factor(bam, ["chr1:0-100000"], min_bins=50)
+    assert n == 100 and f == pytest.approx(1.15)
+
+
+def test_flank_factor_neutral_when_unusable(tmp_path):
+    few = _table(tmp_path, [(60, 1.15)] * 10)
+    assert cnv.flank_factor(few, ["chr1:0-100000"]) == (1.0, 10)  # too few bins
+    wild = _table(tmp_path, [(60, 2.5)] * 100)
+    assert cnv.flank_factor(wild, ["chr1:0-100000"])[0] == 1.0  # outside bounds
+    assert cnv.flank_factor(object(), ["chr1:0-100000"]) == (1.0, 0)  # no staged table

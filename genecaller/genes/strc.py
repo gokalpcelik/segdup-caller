@@ -331,6 +331,12 @@ class STRC(Gene):
             "identical over exons 1-15, so variants there are low-confidence (no discriminating "
             "PSVs) — confirm orthogonally."
         )
+        lines.append(
+            "  WARNING: STRC, STRCP1 and CATSPER2 copy-number estimates may not be reliable. "
+            "On a long-read-checked genome (Paraphase) the short-read depth over the "
+            "STRC-CATSPER2 interval read high, giving STRC 3 / CATSPER2 3 against 2 / 2 by "
+            "long reads. Confirm any STRC or CATSPER2 gain or loss orthogonally."
+        )
 
         result_data["cn_interpretation"] = "\n".join(lines)
         return result_data

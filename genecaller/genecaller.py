@@ -18,7 +18,7 @@ from genecaller.util import (
     Reference,
 )
 from genecaller.bam_process import Bam, liftover_bam_intervals
-from genecaller.calling.cnv import source_cnvscope, staged_table
+from genecaller.calling.cnv import flank_factor, source_cnvscope, staged_table
 from genecaller.gene import Gene
 from genecaller.genes import get_gene_class
 from genecaller import __version__
@@ -136,6 +136,18 @@ def process_single_gene(gene_data: tuple) -> Dict:
         if getattr(gene, "needs_liftover", True):
             gene_logger.info("Performing liftover...")
             _perform_liftover(gene, read_data, ref)
+
+        # flank_regions: single-copy flanks that set the locus's own diploid depth level
+        flank_regions = gene_config.get("flank_regions") if gene_config else None
+        if flank_regions:
+            factor, nbins = flank_factor(read_data["short_read"]["bam"], flank_regions)
+            gene_logger.info(
+                f"Local depth baseline from {nbins} flank bins: {factor:.3f}"
+                + ("" if factor != 1.0 else " (not applied)")
+            )
+            if factor != 1.0:
+                dp_norm = (dp_norm if dp_norm is not None else 1.0) * factor
+                dp_norm_lo = (dp_norm_lo if dp_norm_lo is not None else 1.0) * factor
 
         if dp_norm is not None or dp_norm_lo is not None:
             for rd in read_data.values():
@@ -270,13 +282,19 @@ class GeneCaller:
         self.params = {}
         self.ref = ""
 
-    def setup_paths(self) -> dict[str, str]:
+    def setup_paths(self, cnv_caller: str = "cnvkit") -> dict[str, str]:
         cmds = {}
         for cmd, version in CALLING_MIN_VERSIONS.items():
             cmd_path = get_cmd(cmd, version)
             if not cmd_path:
                 sys.exit(1)
             cmds[cmd.split()[0]] = cmd_path
+        if cnv_caller == "cnvkit":
+            cmd_path = get_cmd("cnvkit.py")
+            if not cmd_path:
+                logger.error("--cnv_caller cnvkit requires cnvkit.py on the PATH (conda install -c bioconda cnvkit)")
+                sys.exit(1)
+            cmds["cnvkit"] = cmd_path
         return cmds
 
     def reset_read_data(self, params: Dict[str, Any]) -> None:
@@ -449,11 +467,18 @@ class GeneCaller:
             help="Also emit a single merged VCF concatenating every per-gene "
             "result VCF, with an INFO/GENE tag identifying the source gene.",
         )
+        parser.add_argument(
+            "--cnv_caller",
+            choices=["depth", "cnvkit"],
+            default="cnvkit",
+            help="Copy-number backend: CNVkit (default; GC/edge/repeat bias correction + Haar "
+            "segmentation; needs cnvkit.py on PATH) or the built-in depth caller",
+        )
         parser.add_argument("--input_vcf", help=argparse.SUPPRESS)
         args = parser.parse_args()
 
         # Setup tools after argument parsing (so --version and --help work without dependencies)
-        self.tools = self.setup_paths()
+        self.tools = self.setup_paths(args.cnv_caller)
         for input in (args.short, args.long):
             if not input:
                 continue
@@ -579,6 +604,7 @@ class GeneCaller:
                 "workers": args.workers,
                 "skip_variant_call": args.skip_variant_call,
                 "merge_vcf": args.merge_vcf,
+                "cnv_caller": args.cnv_caller,
             }
         )
         if args.input_vcf:
