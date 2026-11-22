@@ -371,6 +371,49 @@ def staged_table(
     }
 
 
+def flank_factor(
+    bam: Any,
+    flank_regions: List[str],
+    tag: str = "short_read",
+    min_bins: int = 50,
+    bounds: Tuple[float, float] = (0.8, 1.25),
+) -> Tuple[float, int]:
+    """Local depth baseline from single-copy flanks: (median depth of the flank bins, bin count).
+
+    The depths are normalised to the genome-wide diploid depth, but a locus can sit above or below
+    it (GC, mappability, library bias), so its copy numbers read high or low. The median MAPQ > 50
+    depth of unique flanking bins around the gene is that locus's own diploid level; dividing the
+    gene's depths by it rescales them to the local baseline. Returns (1.0, n) when the staged depth
+    table is missing, fewer than min_bins flank bins are found, or the factor falls outside bounds.
+    """
+    table = getattr(bam, "source_cnv", None) or {}
+    itv = IntervalList(region=",".join(flank_regions))
+    chroms = set(itv.regions)
+    values: List[float] = []
+    for _, tsv in table.values():
+        base = os.path.basename(tsv)
+        chrom = next((c for c in chroms if base == f"{tag}.{c}.norm.tsv"), None)
+        if chrom is None:
+            continue
+        df = pd.read_csv(tsv, sep="\t")
+        df["contig"] = df["contig"].astype(str)
+        df = df[(df["contig"] == chrom) & (df["MQ"] > 50)]
+        mid = (df["start"] + df["end"]) // 2
+        for region in flank_regions:
+            c, rng = region.split(":")
+            if c != chrom:
+                continue
+            a, b = (int(x) for x in rng.replace(",", "").split("-"))
+            values.extend(df.loc[(mid >= a) & (mid <= b), "DP"].tolist())
+    n = len(values)
+    if n < min_bins:
+        return 1.0, n
+    factor = float(np.median(values))
+    if not bounds[0] <= factor <= bounds[1]:
+        return 1.0, n
+    return factor, n
+
+
 def staged_run(bam: Any, param: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """(VCF, TSV) the up-front stage wrote for this exact command, or None to run it here."""
     table = getattr(bam, "source_cnv", None)

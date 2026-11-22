@@ -256,6 +256,7 @@ STRC:
   map: data/hg38/STRC_STRCP1.dat
   config:
     dp_norm: 1.0  # direct k(r)
+    flank_regions: [chr15:43300000-43550000, chr15:43800000-44050000]  # unique flanks: local diploid depth level
     dp_norm_liftover: 1.0546  # collapsed u(r), fit on 278 HPRC/1000G Illumina samples
                                       # (cohort median block CN 4.45 vs 4.0); gentler than the segdup
                                       # neighbours (RCCX/HBA/IKBKG 1.1-1.15) to spare the unique CATSPER2.
@@ -527,6 +528,7 @@ OTOA:
     min_num_signals: 3                  # high identity: ≥3 PSVs for a tract (tune). p.Glu787* typed directly in
                                         # genes/otoa.py regardless. NB ~15kb mid-block PSV desert (21,739-21,754k).
   config:
+    flank_regions: [chr16:21300000-21600000, chr16:22800000-23100000]  # unique flanks: local diploid depth level
     cn_priors:
       # OTOA: allow deletion (recurrent DFNB22 ~500kb NAHR del removes the whole gene; carrier ~0.1-0.2%).
       # OTOAP1 pseudogene near-conserved. Tune in validation.

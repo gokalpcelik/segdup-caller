@@ -77,3 +77,31 @@ def test_template_key_differs_by_caller(make_bam):
     depth_key = cnv.cnvscope_template(bam, param)
     bam.cnv_caller = "cnvkit"
     assert cnv.cnvscope_template(bam, param) != depth_key
+
+
+def _table(tmp_path, depths, tag="short_read", chrom="chr1"):
+    rows = ["contig\tstart\tend\tMQ\tDP\tDP0"]
+    for i, (mq, dp) in enumerate(depths):
+        rows.append(f"{chrom}\t{i * 1000}\t{(i + 1) * 1000}\t{mq}\t{dp}\t{dp}")
+    path = tmp_path / f"{tag}.{chrom}.norm.tsv"
+    path.write_text("\n".join(rows) + "\n")
+
+    class B:
+        source_cnv = {"cmd": (str(tmp_path / "x.vcf.gz"), str(path))}
+
+    return B()
+
+
+def test_flank_factor_uses_unique_flank_bins(tmp_path):
+    # 100 flank bins at 1.15 (MAPQ 60) and bins at 2.0 with low MAPQ that must be ignored
+    bam = _table(tmp_path, [(60, 1.15)] * 100 + [(20, 2.0)] * 50)
+    f, n = cnv.flank_factor(bam, ["chr1:0-100000"], min_bins=50)
+    assert n == 100 and f == pytest.approx(1.15)
+
+
+def test_flank_factor_neutral_when_unusable(tmp_path):
+    few = _table(tmp_path, [(60, 1.15)] * 10)
+    assert cnv.flank_factor(few, ["chr1:0-100000"]) == (1.0, 10)  # too few bins
+    wild = _table(tmp_path, [(60, 2.5)] * 100)
+    assert cnv.flank_factor(wild, ["chr1:0-100000"])[0] == 1.0  # outside bounds
+    assert cnv.flank_factor(object(), ["chr1:0-100000"]) == (1.0, 0)  # no staged table

@@ -5,8 +5,9 @@ channels:
 dependencies:
   - python>=3.9
   - pip
+  - cnvkit>=0.9.12  # default copy-number backend (--cnv_caller cnvkit)
   - pip:
       - .
 # External tools (gatk >=4.2, minimap2 >=2.24, samtools >=1.16, bcftools >=1.16)
 # are expected on PATH and are not installed here.
-# Optional: cnvkit >=0.9.12 (only for --cnv_caller cnvkit).
+# cnvkit is installed above because it is the default copy-number backend.
