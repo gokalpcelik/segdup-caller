@@ -48,3 +48,32 @@ def test_diploid_baseline_unchanged():
     b = _bam(mean=1.0, mean0=1.0)
     assert _best_cn(b, baseline_cn=2) == 2
     assert _best_cn(b, baseline_cn=2, all_reads=True) == 2
+
+
+def _ads(n=30, depth=60):
+    return {i: [depth // 2, depth // 2] for i in range(n)}  # 50:50 allele depths (2+2)
+
+
+def _best_cn_ad(bam, **kw):
+    ratios = {3: 2 / 3, 4: 0.5}
+    scores = {
+        cn: bam.calc_logprob("chr1:1-20000", cn, ads=_ads(), ratio=ratios[cn], all_reads=True, **kw)
+        for cn in ratios
+    }
+    return max(scores, key=scores.get)
+
+
+def test_min_cv_keeps_ad_evidence_from_being_overridden():
+    # lifted depth reads 3.1 copies (reads lost) while the allele ratios say 2+2
+    b = _bam(mean=1.55, mean0=1.55)
+    assert _best_cn_ad(b) == 3
+    assert _best_cn_ad(b, min_cv=0.1) == 4
+
+
+def test_min_cv_keeps_depth_discrimination():
+    # a real 3-copy depth with a 2/3 allele ratio still wins
+    b = _bam(mean=1.5, mean0=1.5)
+    ads = {i: [40, 20] for i in range(30)}
+    s3 = b.calc_logprob("chr1:1-20000", 3, ads=ads, ratio=2 / 3, all_reads=True, min_cv=0.1)
+    s4 = b.calc_logprob("chr1:1-20000", 4, ads=ads, ratio=0.5, all_reads=True, min_cv=0.1)
+    assert s3 > s4

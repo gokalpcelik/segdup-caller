@@ -1240,6 +1240,7 @@ class Gene:
                     baseline_cn=self.baseline_cn,
                     sigma_scaling=sigma_liftover,
                     all_reads=True,
+                    min_cv=self.config.get("liftover_min_cv", 0.0),
                 )
                 total_prob += liftover_prob
 

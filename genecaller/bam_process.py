@@ -605,6 +605,7 @@ class Bam:
         baseline_cn: int = 2,  # baseline ploidy for depth normalization
         sigma_scaling: str = "constant",  # "constant", "linear", or "sublinear"
         all_reads: bool = False,  # score the all-read depth (mean0) instead of the MAPQ>=30 depth
+        min_cv: float = 0.0,  # floor on the depth sigma as a fraction of the CN (0 = off)
     ) -> float:
         # Depth is normalized to the sample's autosomal diploid depth (diploid = 1). A haploid
         # baseline (male non-PAR chrX, baseline_cn == 1) has to be rescaled so haploid = 1,
@@ -640,6 +641,10 @@ class Bam:
             )
         else:  # "constant"
             sigma_scaled = depth_std
+        if min_cv > 0 and cn_eff >= 1.0:
+            # Liftover depth carries realignment bias on top of sample-level noise (reads lost
+            # at diverged sites), so a very sharp depth term can override the allele ratios.
+            sigma_scaled = max(sigma_scaled, min_cv * cn_eff)
         log_prob_depth_sum = sum(
             CopyNumberModel.gamma_logpdf(
                 cn_eff, max(depth, err_rate), sigma_scaled

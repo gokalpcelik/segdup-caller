@@ -98,6 +98,7 @@ GBA:
     fusion_detection: true
   config:
     dp_norm_liftover: 1.0842  # collapsed u(r), fit on 278 HPRC/1000G Illumina samples
+    liftover_min_cv: 0.1  # lifted depth under-counts GBAP1 reads; keep the AD term from being overridden
     cn_priors:
       GBA1: {0: 0.0005, 1: 0.001, 2: 0.9975, 3: 0.0005, 4: 0.0005}   # Highly conserved
       GBAP1: {0: 0.05, 1: 0.20, 2: 0.74, 3: 0.005, 4: 0.005}        # Deletion-prone pseudogene
@@ -251,7 +252,7 @@ STRC:
                                       # recurrent NAHR deletions -> deafness-infertility (OMIM 611102).
   - [STRC, chr15:43599003-43620000]
   - [STRCP1, chr15:43698817-43719466]
-  - [CATSPER2, chr15:43628503-43668118]
+  - [CATSPER2, chr15:43628503-43659000]   # 3' end to 43668118 is MAPQ-dark (DP~0, all-read depth normal); excluded from the depth probe
   map: data/hg38/STRC_STRCP1.dat
   config:
     dp_norm: 1.0  # direct k(r)

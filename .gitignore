@@ -66,3 +66,6 @@ run.py
 *.tmp
 .cache/
 docs/
+
+# Large local sample data
+sampledata/

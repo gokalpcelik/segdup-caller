@@ -490,6 +490,20 @@ class GeneConversionDetector:
                     outside_gene_count += 1
                     continue
 
+            # A segment covering every signal whose mean ratio fits a plain total-CN shift
+            # (e.g. 2+1 called, 2+2 observed) is a copy-number error, not a conversion.
+            if converted_cnt > 0 and num_signals >= len(self.signals):
+                total = self.total_copy_number
+                called = s.allele_counts[1] / total
+                shifted = (self.copy_numbers[1] + converted_cnt) / (total + converted_cnt)
+                if abs(s.mean_signal - shifted) < abs(s.mean_signal - called):
+                    self.logger.info(
+                        f"    Skipped {s.start}-{s.end}: whole-region ratio {s.mean_signal:.3f} "
+                        f"fits total CN {total + converted_cnt} ({shifted:.3f}) better than "
+                        f"{called:.3f}; likely a copy-number error"
+                    )
+                    continue
+
             # Keep segments with non-zero conversion count (both positive and negative)
             # Gene-specific interpretation will determine biological meaning
             if converted_cnt != 0:
