@@ -6,6 +6,7 @@ import shutil
 import logging
 import time
 import resource
+import traceback
 from typing import Dict, Any
 from genecaller.logging import get_logger, set_global_log_level
 from genecaller.util import (
@@ -26,6 +27,7 @@ import tempfile
 import copy
 from packaging.version import Version
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from multiprocessing import cpu_count, Semaphore
 from genecaller import throttle
 from datetime import datetime
@@ -108,7 +110,33 @@ def _apply_config_override(config: Dict[str, Any], spec: str) -> str:
     return f"{'.'.join(keys)}={value!r}" + (" (new key)" if new_key else "")
 
 
+def _failed_gene_result(gene_name: str, exc: BaseException) -> Dict:
+    """Placeholder result for a gene whose analysis failed, so the rest of the run can proceed."""
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).strip()
+    tb_tail = "\n".join(tb.splitlines()[-6:])
+    msg = str(exc) or "no message"
+    return {
+        "status": "failed",
+        "note": (
+            f"Analysis failed for {gene_name}: {type(exc).__name__}: {msg}. "
+            "No results are reported for this gene."
+        ),
+        "error": {"type": type(exc).__name__, "message": msg, "traceback": tb_tail},
+    }
+
+
 def process_single_gene(gene_data: tuple) -> Dict:
+    gene, input_files, ref, base_params, gene_index = gene_data
+    gene_name = gene.gene_names[0]
+    gene_logger = get_logger(f"Gene.{gene_name}")
+    try:
+        return _process_single_gene(gene_data, gene_logger)
+    except Exception as e:
+        gene_logger.error(f"Error processing gene {gene_name}: {e}", exc_info=True)
+        return _failed_gene_result(gene_name, e)
+
+
+def _process_single_gene(gene_data: tuple, gene_logger) -> Dict:
     gene, input_files, ref, base_params, gene_index = gene_data
 
     read_data = _init_read_data(input_files, ref, base_params, gene.gene_names[0])
@@ -118,14 +146,10 @@ def process_single_gene(gene_data: tuple) -> Dict:
     if gene_config:
         params.update(gene_config)
 
-    # Create gene-specific prefixes to avoid file conflicts
     gene_name = gene.gene_names[0]
-
-    # Process the gene
-    gene_logger = get_logger(f"Gene.{gene_name}")
     gene_logger.info(f"Processing gene {', '.join(gene.gene_names)}")
 
-    try:
+    if True:
         # dp_norm scales the source (direct) depth; dp_norm_liftover the lifted depth (defaults to dp_norm)
         dp_norm = gene_config.get("dp_norm") if gene_config else None
         dp_norm_lo = gene_config.get("dp_norm_liftover", dp_norm) if gene_config else None
@@ -189,10 +213,6 @@ def process_single_gene(gene_data: tuple) -> Dict:
 
         gene_logger.info(f"Completed processing gene {gene_name}")
         return gene_data_result
-
-    except Exception as e:
-        gene_logger.error(f"Error processing gene {gene_name}: {e}")
-        raise
 
 
 def _perform_liftover(gene: "Gene", read_data: dict, ref: str) -> None:
@@ -700,45 +720,54 @@ class GeneCaller:
         # Cap total concurrent tool subprocesses across all workers.
         slot_sem = Semaphore(self.params["threads"])
 
+        def run_serial(task):
+            gene_name = task[0].gene_names[0]
+            try:
+                results[gene_name] = process_single_gene(task)
+            except Exception as e:
+                logger.error(f"Failed to process {gene_name}: {e}", exc_info=True)
+                results[gene_name] = _failed_gene_result(gene_name, e)
+
         if max_workers > 1:
             # Use a process pool for parallel processing
-            try:
-                with ProcessPoolExecutor(
-                    max_workers=max_workers,
-                    initializer=throttle.init_worker,
-                    initargs=(slot_sem,),
-                ) as executor:
-                    # longest first, so a long gene does not run alone at the end
-                    futures = {
-                        i: executor.submit(process_single_gene, gene_tasks[i])
-                        for i in run_order(self.gene_sections)
-                    }
+            retry = []
+            with ProcessPoolExecutor(
+                max_workers=max_workers,
+                initializer=throttle.init_worker,
+                initargs=(slot_sem,),
+            ) as executor:
+                # longest first, so a long gene does not run alone at the end
+                futures = {
+                    i: executor.submit(process_single_gene, gene_tasks[i])
+                    for i in run_order(self.gene_sections)
+                }
                 # Collect in the requested order: the merged VCF follows this order
                 for i, task in enumerate(gene_tasks):
-                    returned, gene_name = futures[i], task[0].gene_names[0]
+                    gene_name = task[0].gene_names[0]
                     try:
-                        gene_result = returned.result()
-                        results[gene_name] = gene_result
+                        results[gene_name] = futures[i].result()
                         logger.info(f"Completed {gene_name}")
+                    except BrokenProcessPool as e:
+                        # a worker died (e.g. OOM kill): every unfinished gene fails; retry them serially
+                        logger.error(f"Worker pool broke while processing {gene_name}: {e}")
+                        retry.append(i)
                     except Exception as e:
-                        logger.error(f"Failed to process {gene_name}: {e}")
-                        raise
-
-            except Exception as e:
-                logger.error(f"Parallel processing failed: {e}")
-                raise
+                        logger.error(f"Failed to process {gene_name}: {e}", exc_info=True)
+                        results[gene_name] = _failed_gene_result(gene_name, e)
+            if retry:
+                logger.warning(
+                    "Retrying serially: " + ", ".join(gene_tasks[i][0].gene_names[0] for i in retry)
+                )
+                throttle.set_local(slot_sem)
+                for i in retry:
+                    run_serial(gene_tasks[i])
         else:
             throttle.set_local(slot_sem)
             for task in gene_tasks:
-                gene_name = task[0].gene_names[0]
-                try:
-                    gene_result = process_single_gene(task)
-                    results[gene_name] = gene_result
-                    logger.info(f"Completed {gene_name}")
-                except Exception as e:
-                    logger.error(f"Failed to process {gene_name}: {e}")
-                    raise
+                run_serial(task)
 
+        # restore requested gene order
+        results = {t[0].gene_names[0]: results[t[0].gene_names[0]] for t in gene_tasks}
         return results
 
     def call(self) -> None:
@@ -766,7 +795,14 @@ class GeneCaller:
             f"Resource usage: {mm} mem {ut:.3f} user {st:.3f} sys {t1 - t0:.3f} real"
         )
 
+        failed_genes = [
+            g for g, d in result.items() if isinstance(d, dict) and d.get("status") == "failed"
+        ]
+        if failed_genes:
+            logger.warning(f"Analysis failed for gene(s): {', '.join(failed_genes)}")
+
         config_section = {
+            "failed_genes": failed_genes,
             "software_versions": {
                 "segdup-caller": __version__,
                 **get_software_versions(CALLING_MIN_VERSIONS),
@@ -829,3 +865,7 @@ class GeneCaller:
                     f"Run output is unaffected; remove this directory manually if needed."
                 )
 
+
+        if failed_genes and len(failed_genes) == len(self.genes):
+            logger.error("Analysis failed for every requested gene")
+            sys.exit(1)
