@@ -387,6 +387,8 @@ def flank_factor(
     table is missing, fewer than min_bins flank bins are found, or the factor falls outside bounds.
     """
     table = getattr(bam, "source_cnv", None) or {}
+    if isinstance(flank_regions, str):  # accept "a:1-2,b:3-4" as well as a list
+        flank_regions = [r.strip() for r in flank_regions.split(",") if r.strip()]
     itv = IntervalList(region=",".join(flank_regions))
     chroms = set(itv.regions)
     values: List[float] = []

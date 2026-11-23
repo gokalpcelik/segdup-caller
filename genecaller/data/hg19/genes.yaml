@@ -465,7 +465,7 @@ LPA:                                  # Lp(a) KIV-2 VNTR — no paralog. Standal
     skip_variant_call: true
     kiv2_array: chr6:161032600-161068700   # ~7 collapsed KIV-2 ref copies (extract)
     kiv2_unit: chr6:161033141-161038687    # single 5547bp unit = collapse target + marker frame (5547M vs hg38)
-    flank_regions: chr6:161028049-161032019,chr6:161068750-161072500  # unique L+R flanks = CN2 baseline
+    flank_regions: [chr6:161028049-161032019, chr6:161068750-161072500]  # unique L+R flanks = CN2 baseline
     ref_copies: 7
     dp_norm: 0.992                    # dup-inclusive convention (see hg38 note)
     catalog_file: data/hg19/LPA_kiv2_catalog.npz  # build-independent unit-local library
