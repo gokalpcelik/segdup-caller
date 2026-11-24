@@ -227,6 +227,9 @@ SMN1:
     longdel_priors:
       SMN1_3.5kdel: 0.02    # Less common deletion
       SMN2_6.3kdel: 0.20    # SMN2 deletions also occur
+    # SMN1/SMN2 ratio is judged on the gene body only (SMN1 transcript span): the downstream
+    # flank can be SMN2-type on an SMN1 copy (hybrid) and would otherwise outvote exon 7.
+    cn_ads_regions: [chr5:70924941-70953015]
 STRC:
   gene_strand: "-"
   diff_vcf:

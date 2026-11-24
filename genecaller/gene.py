@@ -902,6 +902,19 @@ class Gene:
 
         self.cn_model = CopyNumberModel(self.read_data, self, self.params)
         liftover_ads = self.cn_model.get_segdup_ads("short_read")
+        # Optionally restrict the paralog-ratio evidence to the gene body: diff sites in the
+        # flanks can carry a different ratio (e.g. SMN1/SMN2 hybrid flanks) and would otherwise
+        # outvote the gene's own sites.
+        ads_regions = self.config.get("cn_ads_regions")
+        if ads_regions:
+            if isinstance(ads_regions, str):
+                ads_regions = [ads_regions]
+            ads_itv = IntervalList(region=",".join(ads_regions))
+            liftover_ads = {
+                k: v
+                for k, v in liftover_ads.items()
+                if ads_itv.get(self.chr, k, k + 1)
+            }
         for regions in self.liftover_segdup_regions:
             for r in regions:
                 itv = IntervalList(r.region)
