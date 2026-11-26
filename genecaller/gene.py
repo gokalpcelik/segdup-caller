@@ -904,7 +904,8 @@ class Gene:
         liftover_ads = self.cn_model.get_segdup_ads("short_read")
         # Optionally restrict the paralog-ratio evidence to the gene body: diff sites in the
         # flanks can carry a different ratio (e.g. SMN1/SMN2 hybrid flanks) and would otherwise
-        # outvote the gene's own sites.
+        # outvote the gene's own sites. Sites are keyed in every paralog's coordinates, so the
+        # regions must cover each paralog or its allele evidence is dropped entirely.
         ads_regions = self.config.get("cn_ads_regions")
         if ads_regions:
             if isinstance(ads_regions, str):

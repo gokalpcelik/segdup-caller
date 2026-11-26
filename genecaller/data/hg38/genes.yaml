@@ -227,9 +227,12 @@ SMN1:
     longdel_priors:
       SMN1_3.5kdel: 0.02    # Less common deletion
       SMN2_6.3kdel: 0.20    # SMN2 deletions also occur
-    # SMN1/SMN2 ratio is judged on the gene body only (SMN1 transcript span): the downstream
-    # flank can be SMN2-type on an SMN1 copy (hybrid) and would otherwise outvote exon 7.
-    cn_ads_regions: [chr5:70924941-70953015]
+    # SMN1/SMN2 ratio is judged on the gene bodies only (SMN1 and SMN2 transcript spans): the
+    # downstream flank can be SMN2-type on an SMN1 copy (hybrid) and would otherwise outvote
+    # exon 7. Diff sites come in both paralogs' coordinates, so both spans must be listed.
+    cn_ads_regions: [chr5:70924941-70953015, chr5:70049522-70077595]
+    dp_norm_liftover: 0.92  # lifted depth reads low here; provisional, set from 2 samples
+    liftover_min_cv: 0.1    # keep the depth term from overriding the allele ratios
 STRC:
   gene_strand: "-"
   diff_vcf:
