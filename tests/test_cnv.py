@@ -35,7 +35,7 @@ def test_depth_caller_finds_het_deletion_and_low_mapq(make_bam, tmp_path, caller
     bam.cnvkit = shutil.which("cnvkit.py") or "cnvkit.py"
     out = str(tmp_path / "x.vcf.gz")
     norm = str(tmp_path / "x.norm.tsv")
-    cnv.call_cnvscope(bam, out, {"region": "chr1,chr2", "output_norm": norm})
+    cnv.call_cnv_detector(bam, out, {"region": "chr1,chr2", "output_norm": norm})
     assert os.path.exists(out + ".tbi")
     df = pd.read_csv(norm, sep="\t")
     assert list(df.columns) == ["contig", "start", "end", "MQ", "DP", "DP0"]
@@ -74,9 +74,9 @@ def test_call_depth_populates_segments_and_depths(make_bam, tmp_path, caller):
 def test_template_key_differs_by_caller(make_bam):
     bam = make_bam()
     param = {"region": "chr1"}
-    depth_key = cnv.cnvscope_template(bam, param)
+    depth_key = cnv.cnv_detector_template(bam, param)
     bam.cnv_caller = "cnvkit"
-    assert cnv.cnvscope_template(bam, param) != depth_key
+    assert cnv.cnv_detector_template(bam, param) != depth_key
 
 
 def _table(tmp_path, depths, tag="short_read", chrom="chr1"):

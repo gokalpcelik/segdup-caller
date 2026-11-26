@@ -247,7 +247,7 @@ merged_vcf: output/HG002.merged.vcf.gz
 
 ## Validation Methodology
 
-> **Fork note:** the figures below and in the per-gene documents were produced by the upstream Sentieon-based pipeline (DNAscope, CNVscope). This fork uses GATK HaplotypeCaller and a built-in depth caller; they have not been re-validated.
+> **Fork note:** the figures below and in the per-gene documents were produced by the upstream Sentieon-based pipeline (DNAscope and its CNV caller). This fork uses GATK HaplotypeCaller and a built-in depth caller; they have not been re-validated.
 
 The upstream Sentieon Segdup Caller was validated using well-characterized reference datasets:
 

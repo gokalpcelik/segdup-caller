@@ -115,8 +115,8 @@ class LPA(Gene):
         collapsed = Bam(collapsed_fname, src_bam.ref, lo_params)
 
         # (2) total count from the collapse depth ratio. RAW coverage (MAPQ0), NOT the
-        # CNVscope-normalized get_depth: the collapsed BAM has no genome-wide coverage to
-        # normalize against, so CNVscope emits no windows for it. Raw unit/flank coverage
+        # CNVdetector-normalized get_depth: the collapsed BAM has no genome-wide coverage to
+        # normalize against, so CNVdetector emits no windows for it. Raw unit/flank coverage
         # is the validated primitive and both are on the same scale.
         unit_dp = self._raw_depth(src_bam, collapsed_fname, self.kiv2_unit, "lpa.unit")
         flank_bam = self._dup_inclusive_flank(src_bam)

@@ -88,8 +88,8 @@ class Bam:
         self.tmpdir = param["tmpdir"]
         self.dp_norm = 1.0
         self.pileup_records = {}
-        self.source_cnv = None  # input Bam: the up-front stage's CNVscope runs, by command
-        self.cnv_inputs = None  # lifted Bam: CNVscope reads these BAMs, not the regions-only merge
+        self.source_cnv = None  # input Bam: the up-front stage's CNVdetector runs, by command
+        self.cnv_inputs = None  # lifted Bam: CNVdetector reads these, not the regions-only merge
         self.liftover_covered = None  # lifted Bam: the IntervalList the regions-only merge holds
         if "tools" not in param:
             raise Exception("External tools are not set up")
@@ -609,7 +609,7 @@ class Bam:
     ) -> float:
         # Depth is normalized to the sample's autosomal diploid depth (diploid = 1). A haploid
         # baseline (male non-PAR chrX, baseline_cn == 1) has to be rescaled so haploid = 1,
-        # as the Sentieon CNVscope output was; otherwise its depth reads as half the copy number.
+        # as the upstream Sentieon CNV output was; otherwise its depth reads as half the CN.
         ploidy_scale = 2.0 / baseline_cn
         # all_reads: in a liftover BAM the reads kept at the paralog's own locus are mostly
         # MAPQ 0 (near-identical copies, e.g. SMN1/SMN2, IKBKG/IKBKGP1) and the MAPQ>=30 depth

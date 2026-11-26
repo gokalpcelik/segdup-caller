@@ -20,7 +20,7 @@ def stub_process(gene_data, gene_logger):
 @pytest.fixture(autouse=True)
 def patch(monkeypatch):
     monkeypatch.setattr(gc, "_process_single_gene", stub_process)
-    monkeypatch.setattr(gc, "_source_cnvscope_stage", lambda *a, **k: {})
+    monkeypatch.setattr(gc, "_source_cnv_detector_stage", lambda *a, **k: {})
 
 
 def make_caller(genes, workers):

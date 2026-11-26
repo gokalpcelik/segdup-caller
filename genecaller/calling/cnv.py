@@ -1,9 +1,9 @@
-"""CNV/depth calling: CNVscope wrapper and depth/segment caching.
+"""CNV/depth calling: CNVdetector (built-in depth or CNVkit) and depth/segment caching.
 
-`call_cnvscope`, `call_depth`, and `trim_to_region_vcf` are pure helpers
+`call_cnv_detector`, `call_depth`, and `trim_to_region_vcf` are pure helpers
 taking a Bam instance as a state-holder. `call_depth` mutates Bam's depth/
-segment caches as part of its caching contract. `source_cnvscope` runs the
-source CNVscope of every chromosome once, before the genes start; `call_depth`
+segment caches as part of its caching contract. `source_cnv_detector` runs the
+source CNVdetector of every chromosome once, before the genes start; `call_depth`
 then reads those outputs by path (`staged_run`).
 """
 
@@ -37,7 +37,7 @@ def _caller(bam: Any) -> str:
     return getattr(bam, "cnv_caller", "depth") or "depth"
 
 
-def cnvscope_template(bam: Any, param: Dict[str, Any]) -> str:
+def cnv_detector_template(bam: Any, param: Dict[str, Any]) -> str:
     """Key identifying a depth run: two runs with the same key produce the same output."""
     return "|".join(
         [
@@ -284,8 +284,8 @@ def _cnvkit_correct(bam: Any, rows: pd.DataFrame, dp_raw: np.ndarray, output: st
     return np.rint(2 * seg_dp).astype(int)
 
 
-def call_cnvscope(bam: Any, output: str, param: Dict[str, Any]) -> None:
-    """Depth-based copy-number segmentation over ``param["region"]`` (replaces Sentieon CNVscope).
+def call_cnv_detector(bam: Any, output: str, param: Dict[str, Any]) -> None:
+    """Depth-based copy-number segmentation over ``param["region"]`` (CNVdetector).
 
     With ``bam.cnv_caller == "cnvkit"`` the depth is GC/edge/repeat-corrected and segmented by
     CNVkit (`_cnvkit_correct`) instead of the plain rounding below; the outputs are identical in form.
@@ -331,28 +331,28 @@ def call_cnvscope(bam: Any, output: str, param: Dict[str, Any]) -> None:
 
 
 def _segment_param(bam: Any, chrom: str, output_norm: str = "") -> Dict[str, Any]:
-    # what a gene's segmentation passes call_cnvscope for one chromosome
+    # what a gene's segmentation passes call_cnv_detector for one chromosome
     return {"region": chrom, "output_norm": output_norm}
 
 
-def source_cnvscope(
+def source_cnv_detector(
     bams: Dict[str, Any], chroms: List[str], out_dir: str, max_parallel: int
 ) -> Dict[Tuple[str, str], Tuple[str, str]]:
-    """Each input's source CNVscope per chromosome: {(input tag, chromosome): (VCF, TSV)}.
+    """Each input's source CNVdetector per chromosome: {(input tag, chromosome): (VCF, TSV)}.
 
-    The one place that decides how the stage runs CNVscope; callers see only these outputs. It runs
-    the genes' own command per input and chromosome, max_parallel at a time: one call over several
-    chromosomes normalises them together and changes the depths. A failed run is left out, and
-    its genes run their own.
+    The one place that decides how the stage runs CNVdetector; callers see only these outputs. It
+    runs the genes' own command per input and chromosome, max_parallel at a time: one call over
+    several chromosomes normalises them together and changes the depths. A failed run is left
+    out, and its genes run their own.
     """
 
     def run(job):
         tag, bam, chrom = job
         vcf, norm = (os.path.join(out_dir, f"{tag}.{chrom}{x}") for x in (".vcf.gz", ".norm.tsv"))
         try:
-            call_cnvscope(bam, vcf, _segment_param(bam, chrom, norm))
+            call_cnv_detector(bam, vcf, _segment_param(bam, chrom, norm))
         except Exception as e:
-            bam.logger.error(f"Source CNVscope on {chrom} failed; its genes run their own: {e}")
+            bam.logger.error(f"Source CNVdetector on {chrom} failed; its genes run their own: {e}")
             return None
         return (tag, chrom), (vcf, norm)
 
@@ -366,7 +366,7 @@ def staged_table(
 ) -> Dict[str, Tuple[str, str]]:
     """{command template: (VCF, TSV)}: each staged output under the gene command it stands for."""
     return {
-        cnvscope_template(bams[tag], _segment_param(bams[tag], chrom)): paths
+        cnv_detector_template(bams[tag], _segment_param(bams[tag], chrom)): paths
         for (tag, chrom), paths in outputs.items()
     }
 
@@ -421,9 +421,9 @@ def staged_run(bam: Any, param: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     table = getattr(bam, "source_cnv", None)
     if table is None:  # no stage for this Bam (a lifted Bam, or a run without one)
         return None
-    staged = table.get(cnvscope_template(bam, param))
+    staged = table.get(cnv_detector_template(bam, param))
     bam.logger.info(
-        f"Source CNVscope for {param.get('region')}: "
+        f"Source CNVdetector for {param.get('region')}: "
         + (f"staged output {staged[0]}" if staged else "no staged output, running its own")
     )
     return staged
@@ -465,7 +465,7 @@ def call_depth(bam: Any, output: str, param: Dict[str, Any]) -> None:
     if staged:  # the up-front stage ran this exact command
         tmp_output, tmp_output_norm = staged
     else:
-        call_cnvscope(bam, tmp_output, param)
+        call_cnv_detector(bam, tmp_output, param)
     if orig_region:
         param["region"] = orig_region
     vcf = vcflib.VCF(tmp_output)

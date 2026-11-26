@@ -19,7 +19,7 @@ from genecaller.util import (
     Reference,
 )
 from genecaller.bam_process import Bam, liftover_bam_intervals
-from genecaller.calling.cnv import flank_factor, source_cnvscope, staged_table
+from genecaller.calling.cnv import flank_factor, source_cnv_detector, staged_table
 from genecaller.gene import Gene
 from genecaller.genes import get_gene_class
 from genecaller import __version__
@@ -224,7 +224,7 @@ def _perform_liftover(gene: "Gene", read_data: dict, ref: str) -> None:
         liftover_fname = f"{liftover_params['prefix']}.bam"
         liftover_results = bam.liftover_combine(gene, liftover_fname)
         liftover_bam = Bam(liftover_fname, ref, liftover_params)
-        # the merged BAM holds the gene regions only: CNVscope reads the input plus the lifted copies
+        # the merged BAM holds the gene regions only: CNVdetector reads input + lifted copies
         liftover_bam.cnv_inputs = [bam.bam] + [r["lifted_bam"] for r in liftover_results]
         liftover_bam.liftover_covered = IntervalList(region=liftover_bam_intervals(gene))
         rd["liftover"] = liftover_bam
@@ -244,7 +244,7 @@ def _init_read_data(input_files, ref, params, gene_name) -> dict:
         f"{params['tmpdir']}/{params['sample_name']}.{gene_name}.{params['sr_prefix']}"
     )
     short_bam = Bam(short, ref, sr_params)
-    short_bam.source_cnv = params.get("source_cnvscope")
+    short_bam.source_cnv = params.get("source_cnv_detector")
     read_data = {"short_read": {"bam": short_bam, "params": sr_params}}
     if long:
         lr_params = copy.copy(params)
@@ -254,13 +254,13 @@ def _init_read_data(input_files, ref, params, gene_name) -> dict:
         )
         lr_params.pop("input_vcf", None)
         long_bam = Bam(long, ref, lr_params)
-        long_bam.source_cnv = params.get("source_cnvscope")
+        long_bam.source_cnv = params.get("source_cnv_detector")
         read_data["long_read"] = {"bam": long_bam, "params": lr_params}
     return read_data
 
 
-def source_cnvscope_chroms(genes, ref: str) -> list:
-    """The chromosomes whose input CNVscope the genes' segmentation reads, longest first."""
+def source_cnv_detector_chroms(genes, ref: str) -> list:
+    """The chromosomes whose input CNVdetector the genes' segmentation reads, longest first."""
     chroms = []
     for gene in genes:
         if not getattr(gene, "needs_liftover", True):  # LPA builds its own CN estimate
@@ -273,20 +273,20 @@ def source_cnvscope_chroms(genes, ref: str) -> list:
     return sorted(chroms, key=lambda c: -length.get(c, 0))
 
 
-def _source_cnvscope_stage(genes, input_files, ref, params):
-    """Run every input's CNVscope over those chromosomes once, before the genes start."""
-    chroms = source_cnvscope_chroms(genes, ref)
+def _source_cnv_detector_stage(genes, input_files, ref, params):
+    """Run every input's CNVdetector over those chromosomes once, before the genes start."""
+    chroms = source_cnv_detector_chroms(genes, ref)
     if not chroms:
         return None
     # the same Bams the genes build, so each command matches the one a gene would run
     bams = {k: rd["bam"] for k, rd in _init_read_data(input_files, ref, params, "stage").items()}
-    out_dir = os.path.join(params["tmpdir"], "source_cnvscope")
+    out_dir = os.path.join(params["tmpdir"], "source_cnv_detector")
     os.makedirs(out_dir, exist_ok=True)
-    logger.info(f"Source CNVscope: {len(bams) * len(chroms)} runs over {', '.join(chroms)}")
+    logger.info(f"Source CNVdetector: {len(bams) * len(chroms)} runs over {', '.join(chroms)}")
     t0 = time.time()
-    outputs = source_cnvscope(bams, chroms, out_dir, min(params["workers"], params["threads"]))
+    outputs = source_cnv_detector(bams, chroms, out_dir, min(params["workers"], params["threads"]))
     failed = len(bams) * len(chroms) - len(outputs)
-    logger.info(f"Source CNVscope done in {time.time() - t0:.0f} s; {failed} failed")
+    logger.info(f"Source CNVdetector done in {time.time() - t0:.0f} s; {failed} failed")
     return staged_table(bams, outputs)
 
 
@@ -698,8 +698,8 @@ class GeneCaller:
         logger.info("All required input files and indices validated successfully")
 
     def process_genes(self) -> Dict[str, Any]:
-        # the source CNVscope of every chromosome runs once, here; the genes read its outputs
-        self.params["source_cnvscope"] = _source_cnvscope_stage(
+        # the source CNVdetector of every chromosome runs once, here; the genes read its outputs
+        self.params["source_cnv_detector"] = _source_cnv_detector_stage(
             self.genes, self.input, self.ref, self.params
         )
         # Prepare task arguments for each gene
